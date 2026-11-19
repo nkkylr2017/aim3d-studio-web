@@ -25,8 +25,8 @@ export const KEYWORDS = {
 
 export const OPTIONS = {
   bed: { outline: ['rect', 'round'], headboard: ['padded', 'channel', 'tufted', 'wing', 'panel', 'slats', 'none'], base: ['platform', 'legs'],
-    bedding: ['duvet', 'tucked', 'none'], throw: ['diagonal', 'heap', 'runner', 'none'], throw_side: ['left', 'right'],
-    throw_texture: ['smooth', 'knit'], pillows: ['2', '3', '4', '5', '6'] },
+    bedding: ['duvet', 'tucked', 'none', 'puffy'], throw: ['diagonal', 'heap', 'runner', 'none', 'pile'], throw_side: ['left', 'right'],
+    throw_texture: ['smooth', 'knit'], pillows: ['2', '3', '4', '5', '6'], pillow_pose: ['leaning', 'upright'] },
   sofa: { arms: ['track', 'rolled', 'slope', 'none'], back: ['cushions', 'tight', 'tufted'], base: ['legs', 'skirt'],
     seats: ['2', '3', '4'], pillows: ['2', '0', '4'], throw: ['none', 'over_back', 'over_arm'] },
   armchair: { arms: ['track', 'rolled', 'slope', 'none'], back: ['cushions', 'tight', 'tufted', 'wing'], base: ['legs', 'skirt'],
@@ -44,6 +44,20 @@ export const BED_TUNING = { throw_extra_w: 120.0, throw_len: 0.40, throw_cx: 15.
 export const ROUND_TUNING = { ring_w: 21.0, front_drop: 18.0, rise: [0.31, 0.935], wing_rise: [0.20, 0.70], deck: 30.0, mattress: 28.0,
   back_pillow: [97.0, 62.0, 15.0], front_pillow: [87.0, 54.0, 22.0], disc: 52.0, pillow_span: 0.874 };
 const bedTuning = () => BED_TUNING;
+// option values this port has and the Ruby builder has not (the parity test leaves them out)
+export const WEB_ONLY = { bed: { bedding: ['puffy'], throw: ['pile'], pillow_pose: ['upright'] } };
+// Web only (not in the Ruby builder, so the parity cases never use them): bedding 'puffy' (a thick duvet with deep
+// folds that hangs to the floor) and throw 'pile' (a big throw dropped bunched on the foot corner, falling over it).
+// They are shaped by the cloth physics; LOOK holds their numbers, and a build request's `tune` overrides them (tuning).
+export const LOOK_DEFAULT = { thick: 14.0, thick_hang: 9.0, duvet_inflate: 3.2, duvet_fold: 75, duvet_waves: 3.0, duvet_gather: 0.82,
+  duvet_end: [0.7, 0.55, 28.0], // the sides that hang off fall in deep upright folds (cloth_sim end_gather)
+  duvet_foot_cut: 0.0, duvet_side_cut: 4.0, // it hangs over the foot to the floor (the plain duvet is cut 30 cm short there)
+  // tuned by eye against the user's studio render (tests/bed_fit/target.png), 2026-11-19
+  pile_w: 1.35, pile_l: 0.45, pile_x: 0.18, pile_y: 0.10, pile_turn: 12, pile_drop: 70, pile_gather: 0.35, pile_fold: 30,
+  pile_waves: 9.0, pile_bend: 0.10, pile_thick: 6.0, pile_dir: 90 };
+export const LOOK = { ...LOOK_DEFAULT };
+export function setLook(tune) { Object.assign(LOOK, LOOK_DEFAULT, tune || {}); }
+const duvetLike = (b) => b === 'duvet' || b === 'puffy';
 const roundTuning = () => ROUND_TUNING;
 
 export const DEFAULTS = { bed: { pillows: '5', throw: 'diagonal', throw_texture: 'knit' }, sofa: { seats: '3' } };
@@ -253,8 +267,8 @@ export function bedDims(h, w, d, o) {
   const foot = g.hy + arc + hang;
   const slide = tucked ? 0.0 : (o.throw_side === 'right' ? 1 : -1) * w * 0.15;
   g.duvet = [[2 * (g.hx + arc + hang), foot + headEdge], [slide, (headEdge - foot) / 2]];
-  g.thick = tucked ? 3.5 : 9.0;
-  g.thick_hang = tucked ? 2.5 : 6.0;
+  g.thick = tucked ? 3.5 : (o.bedding === 'puffy' ? LOOK.thick : 9.0);
+  g.thick_hang = tucked ? 2.5 : (o.bedding === 'puffy' ? LOOK.thick_hang : 6.0);
   g.tsup = { hx: w / 2 - 4, hy: l / 2 - 4, top: g.top + 2.4 + g.thick };
   g.tstand = g.stand + g.thick_hang + (tucked ? 0.0 : 3.5) - 0.8;
   const side = o.throw_side === 'right' ? 1 : -1;
@@ -263,6 +277,7 @@ export function bedDims(h, w, d, o) {
     case 'heap': g.throw = [[w * 0.78, l * 0.44], [side * w * 0.33, -l / 2 + l * 0.14], side * 18]; break;
     case 'diagonal': g.throw = [[w + bt.throw_extra_w, l * bt.throw_len], [side * bt.throw_cx, -l / 2 + l * bt.throw_cy], -side * bt.throw_turn]; break;
     case 'runner': g.throw = [[2 * (g.tsup.hx + PI / 2 * g.tstand + 24), 50], [0, -l / 2 + 34], 0]; break;
+    case 'pile': g.throw = [[w * LOOK.pile_w, l * LOOK.pile_l], [side * w * LOOK.pile_x, -l / 2 + l * LOOK.pile_y], side * LOOK.pile_turn]; break;
     default: g.throw = null;
   }
   if (o.outline === 'round') roundBedDims(g, o);
@@ -277,7 +292,7 @@ function roundBedDims(g, o) {
   g.mt = t.mattress;
   g.m0 = g.z1 - 2;
   g.top = g.m0 + g.mt;
-  const tuck = { duvet: g.thick_hang, tucked: 2.5 }[o.bedding] ?? 0.5;
+  const tuck = { duvet: g.thick_hang, puffy: g.thick_hang, tucked: 2.5 }[o.bedding] ?? 0.5;
   g.r_in = g.R + tuck + 1.5;
   g.ring_w = t.ring_w;
   g.r_out = g.r_in + g.ring_w;
@@ -301,7 +316,8 @@ function roundBedDims(g, o) {
 
 const headboardDepth = (style) => ({ slats: 4.0, padded: 20.0 }[style] ?? 16.0);
 
-export function bedPillowLayout(count, w, headFront, top, seed, round = null) {
+// upright (web only): plumped pillows standing almost straight, the front row nearly as tall as the back (a hotel bed)
+export function bedPillowLayout(count, w, headFront, top, seed, round = null, upright = false) {
   const rnd = new RubyRandom(Math.trunc(seed) + 7);
   const r = (a, b) => a + (b - a) * rnd.rand();
   let euro = [min(w / 2 + 2, 82), 62, 32, 12];
@@ -312,6 +328,10 @@ export function bedPillowLayout(count, w, headFront, top, seed, round = null) {
     const t = roundTuning();
     euro = [t.back_pillow[0], t.back_pillow[1], 32, t.back_pillow[2]];
     std = [t.front_pillow[0], t.front_pillow[1], 28, t.front_pillow[2]];
+  }
+  if (upright && !round) {
+    euro = [min(w / 2 + 2, 84), 68, 34, 5];
+    std = [min(w / 2 - 4, 78), 60, 30, 9];
   }
   const disc = [roundTuning().disc, roundTuning().disc, 14, 12];
   let rows;
@@ -403,25 +423,33 @@ export function simSpec(type, { height_cm = 0, width_cm = 0, depth_cm = 0, attrs
   }
   let [[dsx, dsy], [dcx, dcy]] = g.duvet;
   const side = o.throw_side === 'right' ? 1 : -1;
-  const gather = 0.9;
+  const puffy = o.bedding === 'puffy';
+  const gather = puffy ? LOOK.duvet_gather : 0.9;
   const gdir = 90 - side * 38;
   dsx *= 1 + 0.35 * (1 - gather) * abs(cos(gdir * PI / 180));
   dsy *= 1 + 0.35 * (1 - gather) * abs(sin(gdir * PI / 180));
-  dsy -= bedTuning().duvet_foot_cut;
+  dsy -= puffy ? LOOK.duvet_foot_cut : bedTuning().duvet_foot_cut;
   dcy -= (dsy - g.duvet[0][1]) / 2;
-  const cut = abs(dcx) * 0.75 + bedTuning().duvet_side_cut;
+  const cut = abs(dcx) * 0.75 + (puffy ? LOOK.duvet_side_cut : bedTuning().duvet_side_cut);
   dsx -= cut;
   dcx -= side * cut / 2;
   const turn = side * 7 * PI / 180;
   let cloths = [{ id: 'Duvet', sx: dsx, sy: dsy, nx: rround(dsx / res), ny: rround(dsy / res),
     o: [dcx, dcy, g.top + 4], u: [cos(turn), sin(turn), 0], v: [-sin(turn), cos(turn), 0],
-    gather, gather_dir: gdir, fold: 60, scrunch: 0.2,
+    gather, gather_dir: gdir, fold: puffy ? LOOK.duvet_fold : 60, scrunch: 0.2, ...(puffy && LOOK.duvet_end ? { end_gather: LOOK.duvet_end } : {}),
     drape: { cx: 0, cy: 0, hx: g.w / 2 + 1, hy: g.l / 2 + 1, margin: (g.wb - g.w) / 2 + 5, pile: 10 },
-    steps: 300, iters: 8, bend: 0.45, shear: 0.6, inflate: 1.8, friction: 0.4,
-    damping: 0.982, waves: 2.0, self: true, thickness: g.thick_hang + 0.5, seed }];
+    steps: 300, iters: 8, bend: 0.45, shear: 0.6, inflate: puffy ? LOOK.duvet_inflate : 1.8, friction: 0.4,
+    damping: 0.982, waves: puffy ? LOOK.duvet_waves : 2.0, self: true, thickness: g.thick_hang + 0.5, seed }];
   if (g.throw) {
     let [[tsx, tsy], [tcx, tcy], tturn] = g.throw;
     const a = tturn * PI / 180;
+    if (o.throw === 'pile') {
+      cloths.push({ id: 'Throw', sx: tsx, sy: tsy, nx: rround(tsx / (res * 0.8)), ny: rround(tsy / (res * 0.8)), scrunch: null, drape: null,
+        o: [tcx, tcy, g.top + g.thick + LOOK.pile_drop], u: [cos(a), sin(a), 0], v: [-sin(a), cos(a), 0], steps: 380, iters: 8,
+        bend: LOOK.pile_bend, shear: 0.5, gather: LOOK.pile_gather, gather_dir: LOOK.pile_dir, fold: LOOK.pile_fold, bow: 0.0, end_gather: null,
+        waves: LOOK.pile_waves, inflate: 2.0, friction: 0.5, over: { id: 'Duvet', r_top: g.thick + 2.0, r_side: g.thick_hang + 3.0, z_split: g.top - 4 },
+        damping: 0.982, self: true, thickness: LOOK.pile_thick, seed: seed + 1 });
+    } else {
     const heap = o.throw === 'heap';
     if (heap) tcx += (o.throw_side === 'right' ? 1 : -1) * g.w * 0.05;
     const r2 = res * 0.8;
@@ -435,10 +463,11 @@ export function simSpec(type, { height_cm = 0, width_cm = 0, depth_cm = 0, attrs
       waves: heap ? 5.0 : 1.5, inflate: 2.0, friction: 0.4,
       over: { id: 'Duvet', r_top: g.thick + 2.0, r_side: g.thick_hang + 3.0, z_split: g.top - 4 },
       damping: 0.982, self: true, thickness: 5.0, seed: seed + 1 });
+    }
   }
   const cell = { fast: 3.6, high: 2.1 }[quality] || 2.7;
-  const pillows = bedPillowLayout(Number.parseInt(o.pillows, 10), g.w, g.head_front, g.top, seed).map((pose, k) => pillowSpec(pose, cell, seed + 11 + k));
-  if (o.bedding !== 'duvet') cloths = [];
+  const pillows = bedPillowLayout(Number.parseInt(o.pillows, 10), g.w, g.head_front, g.top, seed, null, o.pillow_pose === 'upright').map((pose, k) => pillowSpec(pose, cell, seed + 11 + k));
+  if (!duvetLike(o.bedding)) cloths = [];
   return { floor: 0, colliders, cloths, pillows };
 }
 
@@ -472,7 +501,7 @@ function buildBed(kit, h, w, d, o) {
     });
   }
   if (o.headboard !== 'none') bedHeadboard(kit, o.headboard, wb, lb, head);
-  bedPillows(kit, Number.parseInt(o.pillows, 10), w, g.head_front, top, sims);
+  bedPillows(kit, Number.parseInt(o.pillows, 10), w, g.head_front, top, sims, null, o.pillow_pose === 'upright');
   if (o.bedding === 'none') return;
 
   const tucked = o.bedding === 'tucked';
@@ -490,13 +519,13 @@ function buildBed(kit, h, w, d, o) {
 
 function bedThrow(kit, g, o, sims) {
   const { tsup, tstand } = g;
-  if (o.throw === 'diagonal' || o.throw === 'heap') {
+  if (o.throw === 'diagonal' || o.throw === 'heap' || o.throw === 'pile') {
     const knit = o.throw_texture === 'knit' ? [5.5, 1.6] : null;
     const [size, centre, turn] = g.throw;
     kit.part('Throw', 'accent', (b) => {
       kit.cloth(b, { size, centre, turn, sup: tsup, sim: sims.Throw,
         stand: tstand, floor: 1.0, grid: knit ? 1.7 : 2.4, thick: sims.Throw ? 3.2 : (knit ? 4.2 : 3.2), crease: sims.Throw ? 0.8 : (knit ? 3.2 : 3.6),
-        crease_size: 13, waves: o.throw === 'heap' ? 12.0 : 4.0, fold: 5.0, fold_size: 12, flare: 3.0,
+        crease_size: 13, waves: o.throw !== 'diagonal' ? 12.0 : 4.0, fold: 5.0, fold_size: 12, flare: 3.0,
         warp: 14.0, edge_puff: 2.0, hem: sims.Throw ? null : [1.5, 3.0], knit });
     });
   } else if (o.throw === 'runner') {
@@ -575,7 +604,7 @@ function roundSimSpec(g, o, seed, quality) {
     { kind: 'ring', r_in: g.r_in, r_out: g.r_out, z0: g.z0, front: g.ring_front, back: g.ring_back, rise: g.ring_rise },
   ];
   const cloths = [];
-  if (o.bedding === 'duvet') {
+  if (duvetLike(o.bedding)) {
     const rad = g.duvet_r;
     const n = rround(2 * rad / res);
     cloths.push({ id: 'Duvet', disc: true, sx: 2 * rad, sy: 2 * rad, nx: n, ny: n, o: [0, 0, g.top + 4],
@@ -637,8 +666,8 @@ function bedHeadboard(kit, style, wb, lb, head) {
   });
 }
 
-function bedPillows(kit, count, w, headFront, top, sims = {}, round = null) {
-  for (const pose of bedPillowLayout(count, w, headFront, top, kit.seed, round)) {
+function bedPillows(kit, count, w, headFront, top, sims = {}, round = null, upright = false) {
+  for (const pose of bedPillowLayout(count, w, headFront, top, kit.seed, round, upright)) {
     const [pw, ph, pt] = pose.size;
     const b = pose.lean;
     const f0 = new Frame([pose.x, pose.cy, pose.cz], [1, 0, 0], [0, sin(b), cos(b)]);

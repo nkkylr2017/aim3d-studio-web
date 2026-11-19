@@ -410,6 +410,8 @@ export class Kit {
     let mid = null;
     if (sim) {
       let f = clamp(rround(sx / Number(sim.nx) / st + 0.3), 1, 3);
+      // the light mesh (web only) would show the physics grid's 5 cm facets: one smooth step finer (Catmull-Rom)
+      if (this.detail > 2) f = max(f, 2);
       if (stitches) f = clamp(max(ceil(sx / Number(sim.nx) / (knit[0] / 5.0)), f), 1, 4);
       [mid, nx, ny] = upsample(sim.pts, Math.trunc(sim.nx), Math.trunc(sim.ny), f);
     }

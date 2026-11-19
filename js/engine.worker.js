@@ -1,11 +1,12 @@
 // Builds models and runs the cloth physics off the page's thread. Every request carries a job id; the page
 // drops any answer whose id is not the latest it asked for. A physics run is stopped by ending this worker.
-import { build, simSpec } from './furniture.js';
+import { build, simSpec, setLook } from './furniture.js';
 import { simulate } from './cloth_sim.js';
 
 self.onmessage = (e) => {
   const { job, kind, req } = e.data;
   try {
+    setLook(req && req.tune); // the new looks' numbers: defaults unless a tuning run sends its own
     if (kind === 'build') {
       const t0 = performance.now();
       const r = build(req.type, req);

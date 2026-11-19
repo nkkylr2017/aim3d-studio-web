@@ -25,11 +25,12 @@ const OPT_T = {
   headboard: { ar: 'لوح الرأس', en: 'Headboard', v: { padded: ['منجّد سادة', 'Padded'], channel: ['قنوات طولية', 'Vertical channels'], tufted: ['كابتونيه بأزرار', 'Button tufted'],
     wing: ['بأجنحة ملتفّة', 'Wingback'], panel: ['ألواح عرضية', 'Horizontal panels'], slats: ['شرائح خشب', 'Wooden slats'], none: ['بدون', 'None'] } },
   base: { ar: 'القاعدة', en: 'Base', v: { platform: ['منجّدة على الأرض', 'Upholstered platform'], legs: ['على أرجل', 'On legs'], skirt: ['تنزل للأرض', 'Skirt to the floor'], plinth: ['قاعدة مسطّحة', 'Plinth'] } },
-  bedding: { ar: 'المفرش', en: 'Bedding', v: { duvet: ['لحاف منفوش نازل', 'Fluffy duvet'], tucked: ['مشدود مرتّب', 'Neatly tucked'], none: ['مرتبة بدون مفرش', 'Bare mattress'] } },
-  throw: { ar: 'البطانية', en: 'Throw', v: { over_back: ['منسدلة على الظهر', 'Over the back'], over_arm: ['منسدلة على المسند', 'Over the arm'], diagonal: ['كبيرة بعرض السرير نازلة من الجهتين', 'Large, across the bed'], heap: ['كومة على الزاوية', 'Heaped on a corner'], runner: ['شريط مطوي بالعرض', 'Folded runner'], none: ['بدون', 'None'] } },
+  bedding: { ar: 'المفرش', en: 'Bedding', v: { duvet: ['لحاف منفوش نازل', 'Fluffy duvet'], tucked: ['مشدود مرتّب', 'Neatly tucked'], none: ['مرتبة بدون مفرش', 'Bare mattress'], puffy: ['لحاف سميك بطيات عميقة للأرض', 'Thick duvet, deep folds to the floor'] } },
+  throw: { ar: 'البطانية', en: 'Throw', v: { over_back: ['منسدلة على الظهر', 'Over the back'], over_arm: ['منسدلة على المسند', 'Over the arm'], diagonal: ['كبيرة بعرض السرير نازلة من الجهتين', 'Large, across the bed'], heap: ['كومة على الزاوية', 'Heaped on a corner'], runner: ['شريط مطوي بالعرض', 'Folded runner'], none: ['بدون', 'None'], pile: ['مكوّمة على زاوية الرجلين', 'Piled on the foot corner'] } },
   throw_side: { ar: 'جهة البطانية', en: 'Throw side', v: { left: ['يسار (من جهة الرجلين)', 'Left (seen from the foot)'], right: ['يمين (من جهة الرجلين)', 'Right (seen from the foot)'] } },
   throw_texture: { ar: 'خامة البطانية', en: 'Throw texture', v: { smooth: ['ناعمة', 'Smooth'], knit: ['محبوكة صوف ثقيل', 'Chunky knit'] } },
   pillows: { ar: 'عدد المخدات', en: 'Pillows', v: {} },
+  pillow_pose: { ar: 'وقفة المخدات', en: 'Pillow pose', v: { leaning: ['مائلة على الظهر', 'Leaning back'], upright: ['منفوشة واقفة', 'Plumped, upright'] } },
   pad: { ar: 'وسادة مقعد', en: 'Seat pad', v: { no: ['بدون', 'No'], yes: ['نعم', 'Yes'] } },
   seats: { ar: 'عدد المقاعد', en: 'Seats', v: {} },
   arms: { ar: 'المساند', en: 'Arms', v: { track: ['مربّعة', 'Square (track)'], rolled: ['ملفوفة', 'Rolled'], slope: ['دائرية مائلة', 'Sloped'], none: ['بدون', 'None'], no: ['بدون', 'No'], yes: ['بمساند', 'Yes'] } },
@@ -138,7 +139,7 @@ const state = {
 // pieces with something soft for the physics: beds, sofas, armchairs, and chairs with a padded seat or back
 const soft = (type, o) => type === 'bed' || type === 'sofa' || type === 'armchair' || (type === 'chair' && (o.back === 'upholstered' || o.pad === 'yes'));
 const seed = () => (state.photoSeed != null ? state.photoSeed : seedFor(`AIM ${state.type}`)) + 7919 * state.foldShift;
-const request = () => ({ type: state.type, attrs: optionsFor(state.type, state.vals[state.type] || {}), seed: seed(), quality: state.quality,
+const request = () => ({ ...(window.__tune ? { tune: window.__tune } : {}), type: state.type, attrs: optionsFor(state.type, state.vals[state.type] || {}), seed: seed(), quality: state.quality,
   width_cm: Number(state.w) || (state.fitDims && state.fitDims.w) || 0, depth_cm: Number(state.d) || (state.fitDims && state.fitDims.d) || 0,
   height_cm: Number(state.h) || (state.fitDims && state.fitDims.h) || 0 });
 const keyOf = (r) => JSON.stringify([r.type, r.attrs, r.seed, r.quality, r.width_cm, r.depth_cm, r.height_cm]);
@@ -172,6 +173,8 @@ let lastFramedKey = '';
 let buildTimer = 0;
 function scheduleBuild() { clearTimeout(buildTimer); buildTimer = setTimeout(rebuild, 90); }
 
+let autoSimFor = null;
+const needsPhysics = (req) => req.type === 'bed' && (req.attrs.bedding === 'puffy' || req.attrs.throw === 'pile');
 async function rebuild() {
   if (state.type === 'ai') return showAI();
   const req = request();
@@ -199,6 +202,8 @@ async function rebuild() {
   showDims();
   renderActions(r.cloth);
   if (state.wantFit && state.cut && mine === latestBuild) setTimeout(runFit, 50);
+  // the puffy duvet and the piled throw get their shape from the physics: it runs by itself for them, once per piece
+  else if (mine === latestBuild && !fitting && !state.sims && r.cloth && needsPhysics(req) && autoSimFor !== key) { autoSimFor = key; setTimeout(settle, 50); }
   return mine === latestBuild;
 }
 
@@ -480,7 +485,47 @@ function makeAI() {
   const id = ++aiJob;
   $('#aiMake').disabled = true;
   $('#aiCancel').hidden = false;
-  window.sketchup.aim3d_ai_start(JSON.stringify({ job: id, image: state.photo, quality: state.quality }));
+  window.sketchup.aim3d_ai_start(JSON.stringify({ job: id, image: aiPhoto(), quality: state.quality, ...(window.__aiOpts || {}) }));
+}
+// What the AI is sent: the photo at up to 1024 px (not the 512 px working copy). When the piece is already cut out,
+// only the piece on a transparent background, framed with a margin: the Spaces then skip their own background
+// removal, which takes a glossy floor's reflection or the room around it for part of the piece.
+function aiPhoto() {
+  const big = state.photoBig || state.photoCanvas;
+  const k = Math.min(1, 1024 / Math.max(big.width, big.height));
+  const W = Math.round(big.width * k); const H = Math.round(big.height * k);
+  const cut = state.cut;
+  if (!cut || !cut.mask || cut.source === 'none' || window.__aiNoCut) { // __aiNoCut: the tests compare with the plain photo
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    c.getContext('2d').drawImage(big, 0, 0, W, H);
+    return c.toDataURL('image/jpeg', 0.92);
+  }
+  // the mask, scaled up smoothly, becomes the alpha (soft edge instead of mask-sized steps)
+  const mc = document.createElement('canvas'); mc.width = cut.w; mc.height = cut.h;
+  const mx = mc.getContext('2d'); const md = mx.createImageData(cut.w, cut.h);
+  let x0 = cut.w; let y0 = cut.h; let x1 = -1; let y1 = -1;
+  for (let y = 0; y < cut.h; y++) {
+    for (let x = 0; x < cut.w; x++) {
+      if (cut.mask[y * cut.w + x] !== 1) continue;
+      md.data[(y * cut.w + x) * 4 + 3] = 255;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < 0) { state.cut = null; const r = aiPhoto(); state.cut = cut; return r; }
+  mx.putImageData(md, 0, 0);
+  const full = document.createElement('canvas'); full.width = W; full.height = H;
+  const fx = full.getContext('2d');
+  fx.imageSmoothingEnabled = true; fx.imageSmoothingQuality = 'high';
+  fx.drawImage(mc, 0, 0, W, H);
+  fx.globalCompositeOperation = 'source-in';
+  fx.drawImage(big, 0, 0, W, H);
+  // framed around the piece: a square with 8 % margin, the way the Spaces expect an object photo
+  const sx = W / cut.w; const sy = H / cut.h;
+  const bw = (x1 - x0 + 1) * sx; const bh = (y1 - y0 + 1) * sy;
+  const side = Math.round(Math.max(bw, bh) * 1.16);
+  const out = document.createElement('canvas'); out.width = side; out.height = side;
+  out.getContext('2d').drawImage(full, x0 * sx, y0 * sy, bw, bh, (side - bw) / 2, (side - bh) / 2, bw, bh);
+  return out.toDataURL('image/png');
 }
 window.aim3dAI = async (m) => {
   if (!m || m.job !== aiJob) return;
@@ -741,6 +786,9 @@ async function runFit() {
     status('fit', () => fill(t('cutFail'), { e: err.message }), true);
   } finally {
     fitting = false;
+    // the builds during the fit skipped the physics the new looks need: it runs now, on the fitted piece
+    const req = request();
+    if (!state.sims && needsPhysics(req) && autoSimFor !== keyOf(req)) { autoSimFor = keyOf(req); setTimeout(settle, 50); }
   }
 }
 
@@ -961,7 +1009,7 @@ function start() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
-  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple }; // for the tests
+  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto }; // for the tests
 }
 
 start();
