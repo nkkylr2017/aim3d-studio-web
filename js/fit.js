@@ -28,6 +28,9 @@ export function plainCutout(px, w, h) {
   steps.sort((a, b) => a - b);
   const smooth = steps[Math.floor(steps.length * 0.9)] < 14;
   if (!(spread < 40 || smooth)) return null;
+  // a dark backdrop (studio black, often a glossy floor): shaded fabric and the floor's reflection sit within the
+  // colour gap of the backdrop, so the cut-out model decides instead
+  if (0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2] < 48) return null;
   const m = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {

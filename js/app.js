@@ -79,6 +79,8 @@ const UI = {
   fitting: ['أطابق الشكل مع الصورة… (10 إلى 30 ثانية)', 'Matching the shape to the photo… (10 to 30 seconds)'],
   fitted: ['طابقتُ الشكل مع الصورة: تطابق {p}٪. «قارن بالصورة» يريك الفرق.', 'Matched to the photo: {p}% overlap. Compare with photo shows the difference.'],
   fittedLow: ['تطابق ضعيف مع الصورة ({p}٪): ربما النوع أو التفاصيل مختلفة، أو الصورة فيها أكثر من قطعة.', 'Weak match with the photo ({p}%): the piece or its details may differ, or the photo shows more than one piece.'],
+  cutStalled: ['توقف تحميل أداة القص أو القص نفسه. جرّب مرة ثانية، أو حدّد القطعة بمربع.', 'The cut-out tool stopped responding while loading or cutting. Try again, or select the piece with a box.'],
+  exactAI: ['تبيه طبق الأصل من الصورة؟ اصنعه بالذكاء الاصطناعي (قطعة واحدة)', 'Want it exactly like the photo? Make it with AI (one piece)'],
   refit: ['طابق مع الصورة', 'Match to photo'], compare: ['قارن بالصورة', 'Compare with photo'], closeCompare: ['رجوع للمجسم', 'Back to the model'],
   compareNote: ['اللون الأخضر: شكل المجسم كما تراه الكاميرا. الخط البرتقالي: حدوده. ما خارجه من الصورة لم يُغطَّ.', 'Green: the model as the camera sees it. Orange line: its outline. Photo outside it is not covered.'],
   sizeHint2: ['اكتب مقاساً واحداً تعرفه (مثلاً العرض)؛ الباقي يُحسب من الصورة. الأرقام الرمادية محسوبة.', 'Type one measurement you know (e.g. the width); the rest comes from the photo. Grey numbers are computed.'], inserting: ['جارٍ الإدراج في سكتشب…', 'Inserting into SketchUp…'],
@@ -309,7 +311,7 @@ async function takePhoto(file) {
   state.photoCanvas = c;
   state.photoBig = big;
   state.box = null; state.partColors = null; state.sense = null; showSense();
-  state.cut = null; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; closeCompare();
+  state.cut = null; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; $('#exactAI').hidden = true; closeCompare();
   $('#pickBox').hidden = false;
   cutOut(px, w, h, c, mine);
   $('#thumb').src = state.photo;
@@ -524,23 +526,47 @@ function cutOut(px, w, h, canvas, photoId) {
   }
   const plain = plainCutout(px, w, h);
   if (plain) { state.cut = plain; return; }
-  if (!maskWorker) {
-    maskWorker = new Worker(new URL('./mask.worker.js', import.meta.url), { type: 'module' });
-    maskWorker.onmessage = (e) => onMask(e.data);
-    maskWorker.onerror = (e) => onMask({ job: maskJob, status: 'error', error: e.message || 'worker' });
-  }
   const id = ++maskJob;
   maskTarget = null;
-  createImageBitmap(canvas).then((bm) => {
-    if (photoId !== photoJob || id !== maskJob) { bm.close(); return; }
-    maskBusy = true;
-    maskWorker.postMessage({ job: id, bitmap: bm }, [bm]);
-  });
+  postMask(id, canvas, () => photoId === photoJob);
 }
 let maskTarget = null; // set when the cut-out is of a selected box
 let maskBusy = false;
+// A download that stalls (seen once in SketchUp, on the first fetch of the model in a session) never ends by itself: a
+// worker silent for 90 s is replaced and the job sent again once, then the page says so instead of waiting forever.
+let maskWatch = null;
+let maskRetry = null;
+const MASK_SILENCE = Number(new URLSearchParams(location.search).get('maskSilence')) || 90000; // the parameter is for the tests
+function newMaskWorker() {
+  maskWorker = new Worker(new URL('./mask.worker.js', import.meta.url), { type: 'module' });
+  maskWorker.onmessage = (e) => { onMask(e.data); watchMask(); };
+  maskWorker.onerror = (e) => onMask({ job: maskJob, status: 'error', error: e.message || 'worker' });
+}
+function watchMask() {
+  clearTimeout(maskWatch);
+  if (maskBusy) maskWatch = setTimeout(maskStalled, MASK_SILENCE);
+}
+function maskStalled() {
+  if (!maskBusy) return;
+  maskWorker.terminate(); maskWorker = null; maskBusy = false;
+  const retry = maskRetry; maskRetry = null;
+  if (retry) retry();
+  else onMask({ job: maskJob, status: 'error', error: t('cutStalled') });
+}
+function postMask(id, src, still = () => true) {
+  if (!maskWorker) newMaskWorker();
+  const send = (again) => createImageBitmap(src).then((bm) => {
+    if (id !== maskJob || !still()) { bm.close(); return; }
+    if (!maskWorker) newMaskWorker();
+    maskRetry = again ? () => send(false) : null;
+    maskBusy = true;
+    maskWorker.postMessage({ job: id, bitmap: bm }, [bm]);
+    watchMask();
+  });
+  send(true);
+}
 function onMask(m) {
-  if (m.status === 'done' || m.status === 'error') maskBusy = false;
+  if (m.status === 'done' || m.status === 'error') { maskBusy = false; maskRetry = null; clearTimeout(maskWatch); }
   if (m.job !== maskJob) return;
   if (m.status === 'cutting' || m.status === 'loading') status('fit', () => t('cutting'));
   else if (m.status === 'download') status('fit', () => fill(t('cutDownload'), { a: nf(Math.round(m.loaded / 1e6)), b: nf(Math.round(m.total / 1e6)) }));
@@ -569,20 +595,15 @@ function cutBox(box) {
   crop.height = Math.max(8, Math.round(pr.h * s * kc));
   crop.getContext('2d').drawImage(big, pr.x * s, pr.y * s, pr.w * s, pr.h * s, 0, 0, crop.width, crop.height);
   const target = { W, H, pr, bx, cw: crop.width, ch: crop.height };
-  state.cut = null; state.fitResult = null; state.partColors = null; state.fitDims = null; $('#compare').hidden = true;
+  state.cut = null; state.fitResult = null; state.partColors = null; state.fitDims = null; $('#compare').hidden = true; $('#exactAI').hidden = true;
   const cpx = crop.getContext('2d').getImageData(0, 0, crop.width, crop.height).data;
   const plain = plainCutout(cpx, crop.width, crop.height);
   if (plain) state.cut = boxCut(plain.mask, crop.width, crop.height, target);
   else {
-    if (maskWorker && maskBusy) { maskWorker.terminate(); maskWorker = null; }
-    if (!maskWorker) {
-      maskWorker = new Worker(new URL('./mask.worker.js', import.meta.url), { type: 'module' });
-      maskWorker.onmessage = (e) => onMask(e.data);
-      maskWorker.onerror = (e) => onMask({ job: maskJob, status: 'error', error: e.message || 'worker' });
-    }
+    if (maskWorker && maskBusy) { maskWorker.terminate(); maskWorker = null; maskBusy = false; clearTimeout(maskWatch); }
     const id = ++maskJob;
     maskTarget = target;
-    createImageBitmap(crop).then((bm) => { if (id === maskJob) { maskBusy = true; maskWorker.postMessage({ job: id, bitmap: bm }, [bm]); } else bm.close(); });
+    postMask(id, crop);
   }
   // the selected piece is recognised on its own
   createImageBitmap(crop).then((bm) => recognise(bm));
@@ -713,6 +734,8 @@ async function runFit() {
       const pc = Math.round(last.iou * 100);
       status('fit', () => fill(t(pc >= 70 ? 'fitted' : 'fittedLow'), { p: nf(pc) }), pc < 70);
       $('#compare').hidden = false;
+      // the fitted model is a close match of its kind; the AI copies the photo's own shape (folds, heaps) as one mesh
+      $('#exactAI').hidden = !(window.sketchup && window.sketchup.aim3d_ai_start);
     }
   } catch (err) {
     status('fit', () => fill(t('cutFail'), { e: err.message }), true);
@@ -862,7 +885,7 @@ function start() {
   physics = new Engine();
   applyLang();
   $('#lang').addEventListener('click', () => { lang = lang === 'ar' ? 'en' : 'ar'; store.set('lang', lang); applyLang(); showDims(); });
-  $('#type').addEventListener('change', (e) => { state.type = e.target.value; state.typeByUser = true; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; if (state.cut) state.wantFit = true; renderForm(); scheduleBuild(); });
+  $('#type').addEventListener('change', (e) => { state.type = e.target.value; state.typeByUser = true; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; $('#exactAI').hidden = true; if (state.cut) state.wantFit = true; renderForm(); scheduleBuild(); });
   for (const k of ['w', 'd', 'h']) {
     $(`#${k}`).addEventListener('input', (e) => {
       // Arabic-Indic and Persian digits and the Arabic decimal mark count as typed; anything else is dropped
@@ -911,6 +934,10 @@ function start() {
   $('#tokenSave').addEventListener('click', () => { if (window.sketchup && window.sketchup.aim3d_set_token) { window.sketchup.aim3d_set_token($('#token').value.trim()); $('#token').value = ''; status('ai', () => t('tokenSaved')); } });
   $('#closeCompare').addEventListener('click', closeCompare);
   $('#refit').addEventListener('click', () => { state.wantFit = false; runFit(); });
+  $('#exactAI').addEventListener('click', () => {
+    const sel = $('#type'); sel.value = 'ai'; sel.dispatchEvent(new Event('change'));
+    makeAI();
+  });
   $('#editSel').addEventListener('click', () => window.sketchup && window.sketchup.aim3d_selection('{}'));
   $('#dae').addEventListener('click', () => exportAs('dae'));
   $('#skipSee').addEventListener('click', () => {
