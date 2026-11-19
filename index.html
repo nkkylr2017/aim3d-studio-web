@@ -22,6 +22,18 @@
     window.addEventListener('error', function (e) { send('error', (e.message || e) + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')); }, true);
     window.addEventListener('unhandledrejection', function (e) { send('rejection', e.reason && (e.reason.stack || e.reason.message) || e.reason); });
     window.aim3dReport = send;
+    // Inside SketchUp there is no offline mode: its browser's Cache Storage never answers, and a service worker
+    // installed by an earlier visit would make the page wait for it. Remove it, and reload once if it was in control.
+    if (/host=sketchup/.test(location.search) && navigator.serviceWorker) {
+      var controlled = !!navigator.serviceWorker.controller;
+      var done = function () { if (controlled && !/[?&]nosw=1/.test(location.search)) location.replace(location.href + '&nosw=1'); };
+      try {
+        Promise.race([
+          navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }),
+          new Promise(function (ok) { setTimeout(ok, 1500); })
+        ]).then(done, done);
+      } catch (e) { done(); }
+    }
   })();
 </script>
 <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js" } }</script>

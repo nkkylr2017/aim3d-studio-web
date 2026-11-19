@@ -923,7 +923,8 @@ function start() {
   document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('dragleave', (e) => { e.preventDefault(); depth = Math.max(0, depth - 1); if (!depth) $('#drop').classList.remove('over'); });
   document.addEventListener('drop', (e) => { e.preventDefault(); depth = 0; $('#drop').classList.remove('over'); takePhoto(e.dataTransfer.files[0]); });
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // offline mode on the website only: inside SketchUp the browser has no working cache (see index.html)
+  if ('serviceWorker' in navigator && !inSketchUp) navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
