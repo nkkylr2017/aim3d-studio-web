@@ -14,7 +14,8 @@ self.onmessage = (e) => {
       for (const p of parts) transfer.push(p.pos.buffer, p.tris.buffer);
       self.postMessage({ job, ok: true, parts, triangles: r.triangles, options: r.options, cloth: r.cloth, ms: Math.round(performance.now() - t0) }, transfer);
     } else if (kind === 'simulate') {
-      const spec = simSpec(req.type, req);
+      // the light mesh uses the fast physics grid
+      const spec = simSpec(req.type, { ...req, quality: req.quality === 'light' ? 'fast' : req.quality });
       if (!spec) { self.postMessage({ job, ok: true, grids: null }); return; }
       const r = simulate(spec);
       self.postMessage({ job, ok: true, grids: r.grids, seconds: r.seconds });

@@ -215,7 +215,8 @@ export function roleColour(pal, role) {
 export function build(type, { height_cm = 0, width_cm = 0, depth_cm = 0, attrs = {}, seed = 1, quality = 'standard', sims = null } = {}) {
   if (!TYPES.includes(type)) throw new Error(`Unknown furniture type: ${type}`);
   const o = optionsFor(type, attrs);
-  const detail = { fast: 1.6, high: 0.72 }[quality] || 1.0;
+  // light: web only (not in the Ruby), for SketchUp models that stay quick with many pieces in a project
+  const detail = { light: 2.4, fast: 1.6, high: 0.72 }[quality] || 1.0;
   const kit = new Kit({ seed, detail });
   kit.sims = sims && typeof sims === 'object' && Object.keys(sims).length ? sims : null;
   kit.variation = {};

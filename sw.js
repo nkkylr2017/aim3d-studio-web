@@ -1,14 +1,16 @@
 // Offline support. The app's own files: network first (an update is never hidden behind an old copy), the cache
 // when offline. The vendored libraries (large, versioned by folder): cache first. The recognition model is kept by
 // transformers.js in its own Cache Storage entry.
-const APP = 'aim3d-app-v2';
-const VENDOR = 'aim3d-vendor-v2';
+const APP = 'aim3d-app-v3';
+const VENDOR = 'aim3d-vendor-v3';
 const SHELL = ['./', './index.html', './js/app.js', './js/furniture.js', './js/kit.js', './js/rng.js', './js/cloth_sim.js', './js/mesh.js',
-  './js/viewer.js', './js/export.js', './js/engine.worker.js', './js/recognize.worker.js', './js/clip_prompts.json'];
+  './js/viewer.js', './js/export.js', './js/engine.worker.js', './js/recognize.worker.js', './js/clip_prompts.json',
+  './js/fit.js', './js/ai.js', './js/mask.worker.js'];
 
 // the libraries are fetched by the first visit before this worker exists, so they are cached here explicitly
 const LIBS = ['./vendor/three/three.module.js', './vendor/three/three.core.js', './vendor/three/addons/OrbitControls.js',
   './vendor/three/addons/GLTFExporter.js', './vendor/three/addons/BufferGeometryUtils.js', './vendor/transformers.min.js',
+  './vendor/three/addons/loaders/GLTFLoader.js', './vendor/three/addons/utils/BufferGeometryUtils.js', './vendor/three/addons/utils/SkeletonUtils.js',
   './vendor/ort-wasm-simd-threaded.jsep.mjs', './vendor/ort-wasm-simd-threaded.jsep.wasm'];
 
 self.addEventListener('install', (e) => {
