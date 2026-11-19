@@ -7,6 +7,15 @@ let net = null;
 let loading = null;
 let latestJob = 0;
 
+// SketchUp's built-in browser has no working Cache Storage (caches.open never answers there, checked 2026-11-19):
+// transformers.js would wait for it forever. The cache is used only when it answers within 1.5 s.
+async function cacheWorks() {
+  try {
+    if (typeof caches === 'undefined') return false;
+    return await Promise.race([caches.open('aim3d-probe').then(() => true, () => false), new Promise((ok) => setTimeout(() => ok(false), 1500))]);
+  } catch (e) { return false; }
+}
+
 async function load(job) {
   if (!T) {
     const lib = await import('../vendor/transformers.min.js');
@@ -18,7 +27,7 @@ async function load(job) {
     wasm.numThreads = 1;
     lib.env.allowRemoteModels = true;
     lib.env.allowLocalModels = false;
-    lib.env.useBrowserCache = true;
+    lib.env.useBrowserCache = await cacheWorks();
     T = lib;
   }
   if (!net) {

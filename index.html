@@ -109,6 +109,8 @@
   .compare-view { position: absolute; inset: 0; display: grid; grid-template-rows: 1fr auto auto; justify-items: center; gap: 8px; padding: 16px 16px 64px; background: var(--studio); }
   .compare-view img { max-width: 100%; max-height: 100%; min-height: 0; object-fit: contain; border-radius: var(--radius-s); box-shadow: 0 1px 0 var(--rule); }
   .compare-view p { margin: 0; font-size: 13px; color: var(--muted); text-align: center; max-width: 60ch; }
+  .box-view img { cursor: crosshair; touch-action: none; user-select: none; }
+  .box-rect { position: absolute; border: 2px solid #ff5a28; background: rgba(255, 90, 40, .12); pointer-events: none; }
   [hidden] { display: none !important; }
 
   @media (max-width: 820px) {
@@ -118,7 +120,10 @@
     .dims strong { font-size: 22px; }
     .dims { left: 14px; top: 12px; } html[dir=rtl] .dims { left: auto; right: 14px; }
     .import { display: none; }
-    .bar { inset-inline: 12px; bottom: 10px; gap: 6px; }
+    .bar { inset-inline: 8px; bottom: 8px; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .bar > * { flex: none; }
+    .bar .spacer { display: none; }
+    .sim { display: none; }
     .btn { padding: 7px 10px; font-size: 13px; }
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -151,6 +156,7 @@
       <input type="file" id="file" accept="image/*" hidden>
       <p class="note" id="seeState" aria-live="polite"></p>
       <p class="note" id="fitState" aria-live="polite"></p>
+      <button class="link" id="pickBox" type="button" data-t="pickBox" hidden></button>
       <div class="row"><progress id="seeBar" max="1" value="0" hidden></progress><button class="link" id="skipSee" type="button" data-t="seeSkip" hidden></button></div>
     </section>
 
@@ -182,6 +188,7 @@
         <label><span data-t="h"></span><input type="text" inputmode="decimal" id="h" dir="ltr"></label>
       </div>
       <p class="hint" data-t="sizeHint2"></p>
+      <p class="note bad" id="senseNote" hidden></p>
       <button class="link" id="refit" type="button" data-t="refit"></button>
     </section>
 
@@ -208,6 +215,12 @@
       <div><strong id="dimH"></strong><span data-t="h"></span></div><em>cm</em>
     </div>
     <p class="import" id="importHint" data-t="importHint"></p>
+    <div class="compare-view box-view" id="boxView" hidden>
+      <img id="boxImg" alt="" draggable="false">
+      <div class="box-rect" id="boxRect" hidden></div>
+      <p data-t="boxNote"></p>
+      <div class="row"><button class="btn primary" id="useBox" type="button" data-t="useBox" disabled></button><button class="btn" id="cancelBox" type="button" data-t="cancelBox"></button></div>
+    </div>
     <div class="compare-view" id="compareView" hidden>
       <img id="compareImg" alt="">
       <p data-t="compareNote"></p>

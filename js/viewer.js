@@ -89,14 +89,14 @@ export class Viewer {
 
   render() { if (this.ok && !this.lost) this.renderer.render(this.scene, this.camera); }
 
-  // parts: kit parts; colourOf(role) -> [r,g,b] or null (white)
+  // parts: kit parts; colourOf(part) -> [r,g,b] or null (white)
   show(parts, colourOf, frame) {
     if (!this.ok) return [];
     this.clear();
     const mats = new Map();
     for (const p of parts) {
       const geometry = partGeometry(p);
-      const rgb = colourOf(p.role) || [244, 244, 241];
+      const rgb = colourOf(p) || [244, 244, 241];
       const key = rgb.join(',');
       let m = mats.get(key);
       if (!m) {

@@ -1,7 +1,7 @@
 // Offline support. The app's own files: network first (an update is never hidden behind an old copy), the cache
 // when offline. The vendored libraries (large, versioned by folder): cache first. The recognition model is kept by
 // transformers.js in its own Cache Storage entry.
-const APP = 'aim3d-app-v3';
+const APP = 'aim3d-app-v4';
 const VENDOR = 'aim3d-vendor-v3';
 const SHELL = ['./', './index.html', './js/app.js', './js/furniture.js', './js/kit.js', './js/rng.js', './js/cloth_sim.js', './js/mesh.js',
   './js/viewer.js', './js/export.js', './js/engine.worker.js', './js/recognize.worker.js', './js/clip_prompts.json',

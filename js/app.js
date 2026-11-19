@@ -55,6 +55,13 @@ const UI = {
   w: ['العرض', 'Width'], d: ['العمق', 'Depth'], h: ['الارتفاع', 'Height'],
   quality: ['الدقة', 'Detail'], light: ['خفيفة (أسرع في سكتشب)', 'Light (quick in SketchUp)'], fast: ['سريعة', 'Fast'], standard: ['عادية', 'Standard'], high: ['مفصّلة', 'Detailed'],
   insert: ['إدراج في سكتشب', 'Insert in SketchUp'],
+  pickBox: ['حدّد القطعة في الصورة', 'Select the piece in the photo'], useBox: ['استعمل هذا التحديد', 'Use this selection'], cancelBox: ['إلغاء', 'Cancel'],
+  boxNote: ['اسحب مستطيلاً حول القطعة التي تريدها. مفيد لصور الغرف: تُقصّ هذه القطعة وحدها، وتقدر تأخذ قطعة ثانية من نفس الصورة بعد الإدراج.', 'Drag a rectangle around the piece you want. Useful for room photos: only that piece is cut out, and you can take another piece from the same photo after inserting.'],
+  boxed: ['حدّدتَ قطعة من الصورة.', 'You selected a piece of the photo.'],
+  senseD: ['العمق غير واضح من زاوية هذه الصورة: تأكد منه أو اكتبه.', 'The depth is not clear from this photo\'s angle: check it or type it.'],
+  senseH: ['الارتفاع غير واضح من زاوية هذه الصورة: تأكد منه أو اكتبه.', 'The height is not clear from this photo\'s angle: check it or type it.'],
+  pasted: ['قرأتُ: عرض {w} × عمق {d} × ارتفاع {h} سم. إن كان الترتيب في المصدر مختلفاً فبدّل الخانات.', 'Read as width {w} × depth {d} × height {h} cm. If the source lists them in another order, swap the fields.'],
+  partColours: ['ألوان كل جزء مأخوذة من مكانه في الصورة.', 'Each part\'s colour is taken from where it shows in the photo.'],
   aiMake: ['اصنع المجسم بالذكاء الاصطناعي', 'Make the model with AI'], aiCancel: ['إيقاف', 'Stop'],
   aiNote: ['للقطع غير الأثاث التسعة (مصباح، نبتة، تحفة…). عند الضغط تُرسل الصورة إلى ذكاء اصطناعي مجاني على Hugging Face عبر سكتشب، وترجع مجسماً. الوقت المجاني محدود يومياً.', 'For pieces outside the nine furniture types (a lamp, a plant, decor…). Pressing it sends the photo to a free AI on Hugging Face through SketchUp and brings back a model. Free time is limited per day.'],
   aiWebOnly: ['صنع المجسم بالذكاء الاصطناعي يعمل داخل سكتشب (إضافة AIM 3D Studio Web).', 'Making a model with AI works inside SketchUp (the AIM 3D Studio Web extension).'],
@@ -67,7 +74,7 @@ const UI = {
   cutting: ['أقصّ القطعة من الصورة…', 'Cutting the piece out of the photo…'],
   cutDownload: ['تنزيل نموذج القصّ مرة واحدة: {a} من {b} م.ب', 'Downloading the cut-out model once: {a} of {b} MB'],
   cutFail: ['تعذّر قصّ القطعة من الصورة ({e}). المقاسات القياسية مستعملة.', 'Could not cut the piece out of the photo ({e}). Standard sizes are used.'],
-  fitting: ['أطابق الشكل مع الصورة…', 'Matching the shape to the photo…'],
+  fitting: ['أطابق الشكل مع الصورة… (10 إلى 30 ثانية)', 'Matching the shape to the photo… (10 to 30 seconds)'],
   fitted: ['طابقتُ الشكل مع الصورة: تطابق {p}٪. «قارن بالصورة» يريك الفرق.', 'Matched to the photo: {p}% overlap. Compare with photo shows the difference.'],
   fittedLow: ['تطابق ضعيف مع الصورة ({p}٪): ربما النوع أو التفاصيل مختلفة، أو الصورة فيها أكثر من قطعة.', 'Weak match with the photo ({p}%): the piece or its details may differ, or the photo shows more than one piece.'],
   refit: ['طابق مع الصورة', 'Match to photo'], compare: ['قارن بالصورة', 'Compare with photo'], closeCompare: ['رجوع للمجسم', 'Back to the model'],
@@ -120,7 +127,7 @@ const SEE_MIN = { headboard: 0.6, throw_texture: 0.95 };
 const state = {
   type: 'bed', vals: {}, fromPhoto: {}, userSet: {}, typeByUser: false,
   w: '', d: '', h: '', quality: 'light', colour: 'white', editing: false,
-  cut: null, photoCanvas: null, fitDims: null, fitResult: null, wantFit: false, aiRaw: null, aiEngine: '',
+  cut: null, photoCanvas: null, photoBig: null, box: null, partColors: null, sense: null, fitDims: null, fitResult: null, wantFit: false, aiRaw: null, aiEngine: '',
   photo: null, photoSeed: null, pal: null, foldShift: 0,
   sims: null, simKey: null, parts: null, items: [],
 };
@@ -182,7 +189,7 @@ async function rebuild() {
   if (!r.ok) { status('build', () => fill(t('failed'), { e: r.error }), true); return false; }
   state.parts = r.parts;
   const sizeKey = JSON.stringify([req.type, req.attrs.outline, req.attrs.top, req.width_cm, req.depth_cm, req.height_cm]);
-  state.items = viewer.show(r.parts, (role) => (state.colour === 'photo' && state.pal ? roleColour(state.pal, role) : null), sizeKey !== lastFramedKey);
+  state.items = viewer.show(r.parts, colourOfPart, sizeKey !== lastFramedKey);
   lastFramedKey = sizeKey;
   status('build', () => fill(t('built'), { n: nf(r.parts.length), t: nf(r.triangles) }));
   showDims();
@@ -267,6 +274,12 @@ async function takePhoto(file) {
     c.width = Math.max(1, Math.round(bitmap.width * k));
     c.height = Math.max(1, Math.round(bitmap.height * k));
     c.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0, c.width, c.height);
+    // a bigger copy, so a small piece selected in a room photo is cut out from real detail
+    const kb = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    var big = document.createElement('canvas');
+    big.width = Math.max(1, Math.round(bitmap.width * kb));
+    big.height = Math.max(1, Math.round(bitmap.height * kb));
+    big.getContext('2d').drawImage(bitmap, 0, 0, big.width, big.height);
   } catch (e) {
     if (mine === photoJob) status('see', () => t('badImage'), true);
     return;
@@ -292,7 +305,10 @@ async function takePhoto(file) {
   });
   state.photo = c.toDataURL('image/jpeg', 0.85);
   state.photoCanvas = c;
+  state.photoBig = big;
+  state.box = null; state.partColors = null; state.sense = null; showSense();
   state.cut = null; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; closeCompare();
+  $('#pickBox').hidden = false;
   cutOut(px, w, h, c, mine);
   $('#thumb').src = state.photo;
   $('#drop').classList.add('has');
@@ -424,6 +440,7 @@ function applyLang() {
   paintStatus('build');
   paintStatus('fit');
   paintStatus('ai');
+  showSense();
   paintViewNote();
   $('#view').setAttribute('aria-label', t('view3d'));
   $('#type').setAttribute('aria-label', t('type'));
@@ -511,21 +528,126 @@ function cutOut(px, w, h, canvas, photoId) {
     maskWorker.onerror = (e) => onMask({ job: maskJob, status: 'error', error: e.message || 'worker' });
   }
   const id = ++maskJob;
+  maskTarget = null;
   createImageBitmap(canvas).then((bm) => {
     if (photoId !== photoJob || id !== maskJob) { bm.close(); return; }
+    maskBusy = true;
     maskWorker.postMessage({ job: id, bitmap: bm }, [bm]);
   });
 }
+let maskTarget = null; // set when the cut-out is of a selected box
+let maskBusy = false;
 function onMask(m) {
+  if (m.status === 'done' || m.status === 'error') maskBusy = false;
   if (m.job !== maskJob) return;
   if (m.status === 'cutting' || m.status === 'loading') status('fit', () => t('cutting'));
   else if (m.status === 'download') status('fit', () => fill(t('cutDownload'), { a: nf(Math.round(m.loaded / 1e6)), b: nf(Math.round(m.total / 1e6)) }));
   else if (m.status === 'error') status('fit', () => fill(t('cutFail'), { e: m.error }), true);
   else if (m.status === 'done') {
-    state.cut = { mask: clean(m.mask, m.w, m.h), w: m.w, h: m.h, source: 'ISNet' };
+    state.cut = maskTarget ? boxCut(m.mask, m.w, m.h, maskTarget) : { mask: clean(m.mask, m.w, m.h), w: m.w, h: m.h, source: 'ISNet' };
     status('fit', '');
     if (state.wantFit && state.parts) runFit();
   }
+}
+
+// The selected box (photo fractions) cut out on its own: the box padded 20 % gives the cut-out model the room around
+// the piece; the mask is put back into the whole photo, clipped to the box (outside it is background).
+function cutBox(box) {
+  const W = state.photoCanvas.width; const H = state.photoCanvas.height;
+  const bx = { x: box.x * W, y: box.y * H, w: box.w * W, h: box.h * H };
+  const pad = 0.2 * Math.max(bx.w, bx.h);
+  const pr = { x: Math.max(0, Math.floor(bx.x - pad)), y: Math.max(0, Math.floor(bx.y - pad)) };
+  pr.w = Math.min(W, Math.ceil(bx.x + bx.w + pad)) - pr.x;
+  pr.h = Math.min(H, Math.ceil(bx.y + bx.h + pad)) - pr.y;
+  const big = state.photoBig || state.photoCanvas;
+  const s = big.width / W;
+  const crop = document.createElement('canvas');
+  const kc = Math.min(1, 1024 / Math.max(pr.w * s, pr.h * s));
+  crop.width = Math.max(8, Math.round(pr.w * s * kc));
+  crop.height = Math.max(8, Math.round(pr.h * s * kc));
+  crop.getContext('2d').drawImage(big, pr.x * s, pr.y * s, pr.w * s, pr.h * s, 0, 0, crop.width, crop.height);
+  const target = { W, H, pr, bx, cw: crop.width, ch: crop.height };
+  state.cut = null; state.fitResult = null; state.partColors = null; state.fitDims = null; $('#compare').hidden = true;
+  const cpx = crop.getContext('2d').getImageData(0, 0, crop.width, crop.height).data;
+  const plain = plainCutout(cpx, crop.width, crop.height);
+  if (plain) state.cut = boxCut(plain.mask, crop.width, crop.height, target);
+  else {
+    if (maskWorker && maskBusy) { maskWorker.terminate(); maskWorker = null; }
+    if (!maskWorker) {
+      maskWorker = new Worker(new URL('./mask.worker.js', import.meta.url), { type: 'module' });
+      maskWorker.onmessage = (e) => onMask(e.data);
+      maskWorker.onerror = (e) => onMask({ job: maskJob, status: 'error', error: e.message || 'worker' });
+    }
+    const id = ++maskJob;
+    maskTarget = target;
+    createImageBitmap(crop).then((bm) => { if (id === maskJob) { maskBusy = true; maskWorker.postMessage({ job: id, bitmap: bm }, [bm]); } else bm.close(); });
+  }
+  // the selected piece is recognised on its own
+  createImageBitmap(crop).then((bm) => recognise(bm));
+  state.typeByUser = false;
+  state.wantFit = true;
+}
+
+function boxCut(mask, cw, ch, t) {
+  const m = new Uint8Array(t.W * t.H);
+  for (let y = Math.floor(t.bx.y); y < Math.min(t.H, Math.ceil(t.bx.y + t.bx.h)); y++) {
+    for (let x = Math.floor(t.bx.x); x < Math.min(t.W, Math.ceil(t.bx.x + t.bx.w)); x++) {
+      const cx = Math.min(cw - 1, Math.floor((x + 0.5 - t.pr.x) / t.pr.w * cw));
+      const cy = Math.min(ch - 1, Math.floor((y + 0.5 - t.pr.y) / t.pr.h * ch));
+      m[y * t.W + x] = mask[cy * cw + cx];
+    }
+  }
+  return { mask: clean(m, t.W, t.H), w: t.W, h: t.H, roi: t.pr, box: t.bx, source: 'box' };
+}
+
+// the box drawn by dragging over the photo in the stage
+let boxDrag = null;
+function openBoxView() {
+  if (!state.photoCanvas) return;
+  $('#boxImg').src = state.photoCanvas.toDataURL('image/jpeg', 0.9);
+  $('#boxView').hidden = false;
+  $('#boxRect').hidden = true;
+  $('#useBox').disabled = true;
+  boxDrag = null;
+}
+function boxPoint(e) {
+  const r = $('#boxImg').getBoundingClientRect();
+  return { x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
+}
+function drawBox() {
+  if (!boxDrag) return;
+  const r = $('#boxImg').getBoundingClientRect(); const pr = $('#boxView').getBoundingClientRect();
+  const x0 = Math.min(boxDrag.a.x, boxDrag.b.x); const y0 = Math.min(boxDrag.a.y, boxDrag.b.y);
+  const el = $('#boxRect');
+  el.hidden = false;
+  el.style.left = `${r.left - pr.left + x0 * r.width}px`; el.style.top = `${r.top - pr.top + y0 * r.height}px`;
+  el.style.width = `${Math.abs(boxDrag.b.x - boxDrag.a.x) * r.width}px`; el.style.height = `${Math.abs(boxDrag.b.y - boxDrag.a.y) * r.height}px`;
+  $('#useBox').disabled = Math.abs(boxDrag.b.x - boxDrag.a.x) < 0.03 || Math.abs(boxDrag.b.y - boxDrag.a.y) < 0.03;
+}
+function useBox() {
+  if (!boxDrag) return;
+  const box = { x: Math.min(boxDrag.a.x, boxDrag.b.x), y: Math.min(boxDrag.a.y, boxDrag.b.y), w: Math.abs(boxDrag.b.x - boxDrag.a.x), h: Math.abs(boxDrag.b.y - boxDrag.a.y) };
+  $('#boxView').hidden = true;
+  state.box = box;
+  status('fit', () => t('boxed'));
+  cutBox(box);
+}
+
+// a note next to the sizes the photo cannot tell
+function showSense() {
+  const s = state.sense;
+  const notes = [];
+  if (s && s.sy < 0.02 && !(Number(state.d) > 0)) notes.push(t('senseD'));
+  if (s && s.sz < 0.02 && !(Number(state.h) > 0)) notes.push(t('senseH'));
+  const el = $('#senseNote');
+  el.textContent = notes.join(' ');
+  el.hidden = !notes.length;
+}
+
+// what colour each part gets: its own colour from the photo when the fit measured it, else the photo palette's
+function colourOfPart(p) {
+  if (state.colour !== 'photo' || !state.pal) return null;
+  return (state.partColors && state.partColors[p.name]) || roleColour(state.pal, p.role);
 }
 
 let fitter = null;
@@ -576,6 +698,10 @@ async function runFit() {
       fitter.setModel(state.items);
       const last = fitter.fit(state.cut, { limits: { sy: [1, 1], sz: [1, 1] }, locked: { sy: true, sz: true }, start: { ...p, sy: 1, sz: 1 } });
       state.fitResult = last;
+      state.sense = fitter.sensitivity(state.cut, last);
+      showSense();
+      state.partColors = fitter.partColours(state.photoCanvas, state.cut, last);
+      if (state.colour === 'photo') state.items = viewer.show(state.parts, colourOfPart, false);
       const pc = Math.round(last.iou * 100);
       status('fit', () => fill(t(pc >= 70 ? 'fitted' : 'fittedLow'), { p: nf(pc) }), pc < 70);
       $('#compare').hidden = false;
@@ -585,6 +711,17 @@ async function runFit() {
   } finally {
     fitting = false;
   }
+}
+
+// "220 x 95 x 82 cm", "2200×950×820 mm", "87 x 37 x 32 in": width × depth × height in cm, or null.
+function readTriple(text) {
+  const s = String(text).replace(/[\u0660-\u0669]/g, (c) => c.charCodeAt(0) - 0x0660).replace(/[\u06F0-\u06F9]/g, (c) => c.charCodeAt(0) - 0x06F0).replace(/\u066B/g, '.');
+  const m = s.match(/(\d+(?:[.,]\d+)?)\s*[x×*X]\s*(\d+(?:[.,]\d+)?)\s*[x×*X]\s*(\d+(?:[.,]\d+)?)\s*(mm|cm|m|in|inch|inches|"|”)?/i);
+  if (!m) return null;
+  const unit = (m[4] || 'cm').toLowerCase();
+  const k = unit === 'mm' ? 0.1 : unit === 'm' ? 100 : (unit.startsWith('in') || unit === '"' || unit === '”') ? 2.54 : 1;
+  const n = (i) => Math.round(parseFloat(m[i].replace(',', '.')) * k * 10) / 10;
+  return { w: n(1), d: n(2), h: n(3) };
 }
 
 function showFitDims() {
@@ -678,14 +815,15 @@ function applyRecipe(rc) {
 function insertIntoSketchUp(opts = {}) {
   if (!host && !window.sketchup) return;
   if (!state.parts || !state.parts.length) return;
-  const colourOf = (role) => (state.colour === 'photo' && state.pal ? roleColour(state.pal, role) : null);
   const payload = {
     protocol: HOST_PROTOCOL,
     name: state.type === 'ai' ? `AI ${state.aiEngine || 'model'}` : `${TYPE_T[state.type][1]}`,
     recipe: recipe(),
     replace: state.editing,
     place: opts.place !== false, // false: put at the origin (tests); normally the piece follows the mouse
-    parts: state.parts.map((p) => ({ name: p.name, role: p.role, color: colourOf(p.role), pos: b64(p.pos), tris: b64(p.tris) })),
+    // a colour measured on the part itself names its material after the part ("AIM Throw"), others after their role
+    parts: state.parts.map((p) => ({ name: p.name, role: p.role, color: colourOfPart(p), pos: b64(p.pos), tris: b64(p.tris),
+      material: state.colour === 'photo' && state.partColors && state.partColors[p.name] ? p.name : p.role })),
   };
   $('#insert').disabled = true;
   status('build', () => t('inserting'));
@@ -720,6 +858,15 @@ function start() {
   for (const k of ['w', 'd', 'h']) {
     $(`#${k}`).addEventListener('input', (e) => {
       // Arabic-Indic and Persian digits and the Arabic decimal mark count as typed; anything else is dropped
+      const triple = readTriple(e.target.value);
+      if (triple) {
+        for (const [key, val] of Object.entries(triple)) { state[key] = String(val); $(`#${key}`).value = String(val); }
+        status('fit', () => fill(t('pasted'), { w: nf(triple.w), d: nf(triple.d), h: nf(triple.h) }));
+        if (state.cut) state.wantFit = true;
+        showSense();
+        scheduleBuild();
+        return;
+      }
       let v = e.target.value.replace(/[\u0660-\u0669]/g, (c) => c.charCodeAt(0) - 0x0660).replace(/[\u06F0-\u06F9]/g, (c) => c.charCodeAt(0) - 0x06F0)
         .replace(/[\u066B,]/g, '.').replace(/[^\d.]/g, '');
       const dot = v.indexOf('.');
@@ -744,6 +891,13 @@ function start() {
   $('#glb').addEventListener('click', () => exportAs('glb'));
   $('#insert').addEventListener('click', () => insertIntoSketchUp());
   $('#compare').addEventListener('click', openCompare);
+  $('#pickBox').addEventListener('click', openBoxView);
+  $('#cancelBox').addEventListener('click', () => { $('#boxView').hidden = true; });
+  $('#useBox').addEventListener('click', useBox);
+  const bimg = $('#boxImg');
+  bimg.addEventListener('pointerdown', (e) => { e.preventDefault(); bimg.setPointerCapture(e.pointerId); const p = boxPoint(e); boxDrag = { a: p, b: p }; drawBox(); });
+  bimg.addEventListener('pointermove', (e) => { if (boxDrag && e.buttons) { boxDrag.b = boxPoint(e); drawBox(); } });
+  bimg.addEventListener('pointerup', (e) => { if (boxDrag) { boxDrag.b = boxPoint(e); drawBox(); } });
   $('#aiMake').addEventListener('click', makeAI);
   $('#aiCancel').addEventListener('click', cancelAI);
   $('#tokenSave').addEventListener('click', () => { if (window.sketchup && window.sketchup.aim3d_set_token) { window.sketchup.aim3d_set_token($('#token').value.trim()); $('#token').value = ''; status('ai', () => t('tokenSaved')); } });
@@ -771,7 +925,7 @@ function start() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
-  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare }; // for the tests
+  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple }; // for the tests
 }
 
 start();
