@@ -106,7 +106,18 @@ function toGrid(cut) {
   const gh = Math.max(8, Math.round(roi.h * k));
   const g = new Uint8Array(gw * gh);
   const at = (x, y) => Math.min(cut.h - 1, Math.floor(roi.y + (y + 0.5) / k)) * cut.w + Math.min(cut.w - 1, Math.floor(roi.x + (x + 0.5) / k));
-  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) g[y * gw + x] = cut.mask[at(x, y)];
+  // each cell averages the cut-out pixels it covers: a 2 px chair leg survives the reduction (one sample would miss it)
+  const cellW = 1 / k;
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      const sx0 = roi.x + x * cellW; const sy0 = roi.y + y * cellW;
+      let on = 0; let n = 0;
+      for (let yy = Math.floor(sy0); yy < Math.min(cut.h, Math.ceil(sy0 + cellW)); yy++) {
+        for (let xx = Math.floor(sx0); xx < Math.min(cut.w, Math.ceil(sx0 + cellW)); xx++) { on += cut.mask[yy * cut.w + xx]; n++; }
+      }
+      g[y * gw + x] = n ? (on / n >= 0.4 ? 1 : 0) : cut.mask[at(x, y)];
+    }
+  }
   // Unknown: inside the piece's outline (between its left and right edge on a row, and its top and bottom in a
   // column) but not in the cut-out. A white cushion on a white backdrop is cut away by colour and leaves such a gap;
   // so does a real opening (between legs). Neither counts for or against a match.
@@ -135,8 +146,7 @@ function bbox(g, w, h) {
 // the WHOLE photo, with a searched field of view. The piece is placed in the picture by turning the camera (the
 // look-at point pans) and moving it closer or further, so a piece at the side of a wide-angle room photo keeps the
 // perspective it really has there. Comparison happens pixel for pixel on the photo's grid.
-let RS = 2; // render pixels per grid pixel (1 while searching, 2 for the final answer)
-const FOVS = [24, 40, 60]; // vertical field of view tried first, degrees
+const MULT = { sy: true, sz: true, fov: true }; // searched in ratios, not steps
 
 export class Fitter {
   constructor(renderer) {
@@ -217,87 +227,115 @@ export class Fitter {
     return this.buf;
   }
 
-  // Binary silhouette on the render grid (row 0 at the top) and its box in GRID pixels.
-  silhouette(p, grid) {
-    const w = grid.gw * RS; const h = grid.gh * RS;
-    const view = { fw: grid.fullW * RS, fh: grid.fullH * RS, x: grid.offX * RS, y: grid.offY * RS, w, h };
+  // Binary silhouette on the grid at rs render pixels per cell (a cell is set when any of its rs×rs pixels is), and
+  // its box in grid cells.
+  silhouette(p, grid, rs) {
+    const w = grid.gw * rs; const h = grid.gh * rs;
+    const view = { fw: grid.fullW * rs, fh: grid.fullH * rs, x: grid.offX * rs, y: grid.offY * rs, w, h };
     const buf = this.render(p, w, h, this.white, view);
-    const s = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) s[(h - 1 - y) * w + x] = buf[(y * w + x) * 4] > 127 ? 1 : 0;
-    const b = bbox(s, w, h);
-    return { s, w, h, box: b && { x0: b.x0 / RS, y0: b.y0 / RS, x1: b.x1 / RS, y1: b.y1 / RS, w: b.w / RS, h: b.h / RS, cx: b.cx / RS, cy: b.cy / RS } };
+    const cnt = new Uint8Array(grid.gw * grid.gh);
+    for (let y = 0; y < h; y++) {
+      const gy = Math.floor((h - 1 - y) / rs) * grid.gw;
+      for (let x = 0; x < w; x++) if (buf[(y * w + x) * 4] > 127) cnt[gy + Math.floor(x / rs)]++;
+    }
+    // a cell is the model when half its pixels are (any one pixel would fatten every edge by half a cell)
+    const need = Math.max(1, Math.ceil(rs * rs / 2));
+    const s = new Uint8Array(grid.gw * grid.gh);
+    for (let i = 0; i < s.length; i++) s[i] = cnt[i] >= need ? 1 : 0;
+    return { s, box: bbox(s, grid.gw, grid.gh) };
   }
 
-  // Distance and pan that put the piece's outline over the cut-out's box (two corrections), for a camera direction,
-  // field of view and proportions; lk/ox/oy then nudge it (a piece cut off by the frame or the box).
-  aligned(p, grid) {
-    const key = `${p.az.toFixed(2)},${p.el.toFixed(2)},${p.fov.toFixed(2)},${p.sy.toFixed(4)},${p.sz.toFixed(4)}`;
+  // Distance and pan that put the piece's outline over the cut-out's box, for a camera direction, field of view and
+  // proportions; lk/ox/oy then nudge it (a piece cut off by the photo's edge). Pan is a turn of the camera (a real
+  // off-centre shot), so distance and pan scale together and the corrections repeat until the boxes meet.
+  aligned(p, grid, rs) {
+    const key = `${rs}|${p.az.toFixed(2)},${p.el.toFixed(2)},${p.fov.toFixed(2)},${p.sy.toFixed(4)},${p.sz.toFixed(4)}`;
     const t = Math.tan(THREE.MathUtils.degToRad(p.fov) / 2);
     let base = this.alignCache.get(key);
     if (!base) {
-      const { radius } = this.pose({ ...p, dist: 1, px: 0, py: 0 }, grid.fullW / grid.fullH);
       const mb = grid.box;
-      // analytic start: the piece's apparent size from the cut-out's box, its place from the box's centre in the photo
-      // a neighbouring camera's answer is the best start (the search moves in small steps); else from the box
-      if (this.warm && this.warm.grid === grid) base = { dist: this.warm.dist, px: this.warm.px, py: this.warm.py };
-      else {
+      const analytic = () => {
+        const { radius } = this.pose({ ...p, dist: 1, px: 0, py: 0 }, grid.fullW / grid.fullH);
         const dist = 2 * radius * grid.fullH / (t * (mb.w + mb.h));
         const per0 = 2 * dist * t / grid.fullH;
-        base = { dist, px: -(grid.offX + mb.cx - grid.fullW / 2) * per0, py: (grid.offY + mb.cy - grid.fullH / 2) * per0 };
-      }
-      // pan is a turn of the camera, not a slide, so the corrections are repeated until the boxes meet
-      const tol = RS === 1 ? 1.5 : 0.6; // loose while searching, tight for the final answer
-      for (let it = 0; it < (RS === 1 ? 4 : 6); it++) {
-        const sil = this.silhouette({ ...p, ...base }, grid);
+        return { dist, px: -(grid.offX + mb.cx - grid.fullW / 2) * per0, py: (grid.offY + mb.cy - grid.fullH / 2) * per0 };
+      };
+      // a neighbouring camera's answer is the best start; across a change of lens it is rescaled to keep the size
+      const w = this.warm;
+      if (w && w.grid === grid) {
+        const k = Math.tan(THREE.MathUtils.degToRad(w.fov) / 2) / t;
+        base = { dist: w.dist * k, px: w.px * k, py: w.py * k };
+      } else base = analytic();
+      const tol = rs === 1 ? 1.5 : 0.6; // loose while searching, tight for the final answer
+      let ok = false;
+      for (let it = 0; it < (rs === 1 ? 4 : 6); it++) {
+        let sil = this.silhouette({ ...p, ...base }, grid, rs);
+        if (!sil.box && it === 0) { base = analytic(); sil = this.silhouette({ ...p, ...base }, grid, rs); }
         if (!sil.box) break;
         const off = Math.abs(mb.cx - sil.box.cx) + Math.abs(mb.cy - sil.box.cy) + Math.abs(mb.w + mb.h - sil.box.w - sil.box.h) / 2;
-        if (off < tol) { base.sil = sil; base.rs = RS; break; } // this render is also the one to score
-        base.dist *= (sil.box.w + sil.box.h) / (mb.w + mb.h);
+        if (off < tol) { base.sil = sil; ok = true; break; } // this render is also the one to score
+        const s = (sil.box.w + sil.box.h) / (mb.w + mb.h);
+        base.dist *= s; base.px *= s; base.py *= s; // closer or further: the pan turns by the same angle
         const perPx = 2 * base.dist * t / grid.fullH;
         base.px -= (mb.cx - sil.box.cx) * perPx;
         base.py += (mb.cy - sil.box.cy) * perPx;
       }
       this.alignCache.set(key, base);
-      this.warm = { grid, ...base };
       if (this.alignCache.size > 400) this.alignCache.clear();
+      if (ok) this.warm = { grid, fov: p.fov, dist: base.dist, px: base.px, py: base.py }; // only a good answer leads
     }
-    const dist = base.dist * Math.exp(-(p.lk || 0));
+    const e = Math.exp(-(p.lk || 0));
+    const dist = base.dist * e;
     const perPx = 2 * dist * t / grid.fullH;
-    return { ...p, dist, px: base.px * Math.exp(-(p.lk || 0)) - (p.ox || 0) * perPx, py: base.py * Math.exp(-(p.lk || 0)) + (p.oy || 0) * perPx };
+    return { q: { ...p, dist, px: base.px * e - (p.ox || 0) * perPx, py: base.py * e + (p.oy || 0) * perPx }, base };
   }
 
-  // IoU on the photo grid. Pixels the cut-out left undecided or marked to ignore (outside the user's box) count
-  // for nothing either way; nothing outside the frame is seen.
-  score(p, grid) {
-    const q = this.aligned(p, grid);
-    const base = this.alignCache.get(`${p.az.toFixed(2)},${p.el.toFixed(2)},${p.fov.toFixed(2)},${p.sy.toFixed(4)},${p.sz.toFixed(4)}`);
+  // IoU on the grid. Undecided cells count for nothing; outside the user's box is background; beyond the photo's
+  // edge nothing is seen. Model reaching past the region's own edge (not the photo's) is charged by how far its box
+  // goes beyond, so the search is pulled back however far it spilled.
+  score(p, grid, rs = 2) {
+    const { q, base } = this.aligned(p, grid, rs);
     const unmoved = !(p.lk || p.ox || p.oy);
-    const sil = unmoved && base && base.sil && base.rs === RS ? base.sil : this.silhouette(q, grid);
+    const sil = unmoved && base.sil ? base.sil : this.silhouette(q, grid, rs);
     let inter = 0; let union = 0;
-    for (let y = 0; y < grid.gh; y++) {
-      for (let x = 0; x < grid.gw; x++) {
-        const i = y * grid.gw + x;
-        if (grid.u[i]) continue;
-        const mv = grid.g[i];
-        const sv = sil.s[(y * RS + 1) * sil.w + x * RS + 1];
-        if (mv && sv) inter++;
-        if (mv || sv) union++;
-      }
+    for (let i = 0; i < grid.gw * grid.gh; i++) {
+      if (grid.u[i]) continue;
+      const mv = grid.g[i]; const sv = sil.s[i];
+      if (mv && sv) inter++;
+      if (mv || sv) union++;
     }
-    // The grid is only a region of the photo: model reaching its edge (where that edge is not the photo's own) goes
-    // on outside it, over background. That spill is not drawn here, so it is charged as a band of false pixels.
     const T = grid.touches || {};
-    let spill = 0;
-    for (let x = 0; x < grid.gw; x++) {
-      if (!T.t && sil.s[1 * sil.w + x * RS + 1]) spill++;
-      if (!T.b && sil.s[((grid.gh - 1) * RS + 1) * sil.w + x * RS + 1]) spill++;
+    const b = this.projectedBox(q, grid);
+    let over = 0;
+    if (b) {
+      // only where the silhouette itself reaches the region's edge (an L-shaped piece's empty box corner may cross it)
+      const W = grid.gw; const H = grid.gh;
+      let l = false; let r = false; let tp = false; let bt = false;
+      for (let y = 0; y < H; y++) { if (sil.s[y * W]) l = true; if (sil.s[y * W + W - 1]) r = true; }
+      for (let x = 0; x < W; x++) { if (sil.s[x]) tp = true; if (sil.s[(H - 1) * W + x]) bt = true; }
+      if (!T.l && l) over += Math.max(0, -b.x0) * (b.y1 - b.y0);
+      if (!T.r && r) over += Math.max(0, b.x1 - W) * (b.y1 - b.y0);
+      if (!T.t && tp) over += Math.max(0, -b.y0) * (b.x1 - b.x0);
+      if (!T.b && bt) over += Math.max(0, b.y1 - H) * (b.x1 - b.x0);
     }
-    for (let y = 0; y < grid.gh; y++) {
-      if (!T.l && sil.s[(y * RS + 1) * sil.w + 1]) spill++;
-      if (!T.r && sil.s[(y * RS + 1) * sil.w + (grid.gw - 1) * RS + 1]) spill++;
-    }
-    union += spill * 12;
+    union += 0.5 * over;
     return { iou: union ? inter / union : 0, pose: q };
+  }
+
+  // The model's 3D box projected onto the grid (cells), with the camera as posed for q.
+  projectedBox(q, grid) {
+    const size = this.box.getSize(new THREE.Vector3());
+    this.pose(q, grid.fullW / grid.fullH, { fw: grid.fullW, fh: grid.fullH, x: grid.offX, y: grid.offY, w: grid.gw, h: grid.gh });
+    const hx = size.x * 0.005; const hz = size.y * q.sy * 0.005; const hy = size.z * q.sz * 0.01;
+    let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+    const v = new THREE.Vector3();
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) for (const yy of [0, hy]) {
+      v.set(sx * hx, yy, sz * hz).project(this.camera);
+      if (v.z > 1) return null; // behind the camera
+      const gx = (v.x + 1) / 2 * grid.gw; const gy = (1 - v.y) / 2 * grid.gh;
+      x0 = Math.min(x0, gx); x1 = Math.max(x1, gx); y0 = Math.min(y0, gy); y1 = Math.max(y1, gy);
+    }
+    return { x0, y0, x1, y1 };
   }
 
   // Search camera, field of view, proportions and placement. limits: { sy: [lo, hi], sz: [lo, hi] } (factors on the
@@ -306,85 +344,98 @@ export class Fitter {
     const grid = toGrid(cut);
     if (!grid.box || grid.area < 40) return null;
     this.alignCache = new Map();
-    RS = 1;
+    this.warm = null;
     const b = grid.box;
     const edge = 2;
-    // a piece cut off by the frame or the user's box: its box is not its size, so placement is searched more widely
     const T = grid.touches;
+    // a piece cut off by the photo's edge: its box is not its size, so placement is searched more widely
     const cropped = (T.l && b.x0 <= edge) || (T.t && b.y0 <= edge) || (T.r && b.x1 >= grid.gw - edge) || (T.b && b.y1 >= grid.gh - edge);
     let evals = 0;
     // the type's standard proportions are real furniture: a size moves away from them only when the photo clearly
-    // says so (camera angle and depth/height trade off against each other in a single view)
+    // says so (camera angle and depth/height trade off in a single view); a lens far from normal likewise
     const prior = (q) => 0.3 * (Math.log(q.sy) ** 2 + Math.log(q.sz) ** 2) + 0.01 * Math.log(q.fov / 40) ** 2;
-    const f = (q) => { evals++; return this.score(q, grid).iou - prior(q); };
     const span = cropped ? 0.5 * Math.max(grid.gw, grid.gh) : 0.12 * Math.max(b.w, b.h);
     const clampP = (q) => ({
-      az: Math.max(-85, Math.min(85, q.az)), el: Math.max(-5, Math.min(60, q.el)), fov: Math.max(10, Math.min(75, q.fov)),
+      az: Math.max(-105, Math.min(105, q.az)), el: Math.max(-5, Math.min(60, q.el)), fov: Math.max(10, Math.min(75, q.fov)),
       sy: locked.sy ? 1 : Math.max(limits.sy[0], Math.min(limits.sy[1], q.sy)),
       sz: locked.sz ? 1 : Math.max(limits.sz[0], Math.min(limits.sz[1], q.sz)),
       lk: Math.max(cropped ? -0.3 : -0.25, Math.min(cropped ? 1.2 : 0.25, q.lk || 0)),
       ox: Math.max(-span, Math.min(span, q.ox || 0)), oy: Math.max(-span, Math.min(span, q.oy || 0)),
     });
-    let best = null; let bestV = -1;
-    const starts = [];
-    if (start) starts.push({ lk: 0, ox: 0, oy: 0, fov: 36, ...start });
-    else {
-      for (const az of [-60, -35, -15, 0, 15, 35, 60]) for (const el of [6, 18, 32]) starts.push({ az, el, fov: FOVS[1], sy: 1, sz: 1 });
-    }
-    const scored = starts.map((s0) => { const q = clampP(s0); return [f(q), q]; }).sort((a, c) => c[0] - a[0]);
-    [bestV, best] = scored[0];
-    if (!start) {
-      // the other lenses, tried from the three best directions only
-      for (const [, q0] of scored.slice(0, 3)) for (const fov of [FOVS[0], FOVS[2]]) { const q = clampP({ ...q0, fov }); const v = f(q); if (v > bestV) { bestV = v; best = q; } }
-    }
-    if (cropped && !start) {
-      // bigger than what shows, pushed off the frame where it is cut
-      const dx = (T.r && b.x1 >= grid.gw - edge ? 1 : 0) - (T.l && b.x0 <= edge ? 1 : 0);
-      const dy = (T.b && b.y1 >= grid.gh - edge ? 1 : 0) - (T.t && b.y0 <= edge ? 1 : 0);
-      for (const lk of [0.3, 0.6]) {
-        const q = clampP({ ...best, lk, ox: dx * 0.25 * b.w * lk, oy: dy * 0.25 * b.h * lk });
-        const v = f(q); if (v > bestV) { bestV = v; best = q; }
-      }
-    }
-    const keys = ['az', 'el', 'fov', 'sy', 'sz', 'lk', 'ox', 'oy'];
-    const mult = { sy: true, sz: true, fov: true };
-    const step = { az: start ? 6 : 10, el: start ? 4 : 7, fov: 0.2, sy: 0.16, sz: 0.12, lk: 0.12, ox: Math.max(2, b.w * 0.06), oy: Math.max(2, b.h * 0.06) };
-    for (let round = 0; round < 6; round++) {
-      let moved = true;
-      let guard = 0;
-      while (moved && evals < (start ? 140 : 320) && guard++ < 20) {
-        moved = false;
-        for (const key of keys) {
-          if (locked[key]) continue;
-          for (const dir of [1, -1]) {
-            const q = clampP({ ...best, [key]: mult[key] ? best[key] * Math.exp(dir * step[key]) : best[key] + dir * step[key] });
-            const v = f(q);
-            if (v > bestV + 1e-4) { bestV = v; best = q; moved = true; }
+    const descend = (best0, bestV0, rs, keys, step, budget) => {
+      let best = best0; let bestV = bestV0;
+      const f = (q) => { evals++; return this.score(q, grid, rs).iou - prior(q); };
+      for (let round = 0; round < 6; round++) {
+        let moved = true;
+        let sweeps = 0;
+        while (moved && sweeps++ < 3 && evals < budget) {
+          moved = false;
+          for (const key of keys) {
+            if (locked[key]) continue;
+            for (const dir of [1, -1]) {
+              const q = clampP({ ...best, [key]: MULT[key] ? best[key] * Math.exp(dir * step[key]) : best[key] + dir * step[key] });
+              const v = f(q);
+              if (v > bestV + 1e-4) { bestV = v; best = q; moved = true; break; } // the other direction goes back
+            }
           }
         }
+        for (const key of keys) step[key] /= 2;
       }
-      for (const key of keys) step[key] /= 2;
+      return [best, bestV];
+    };
+    const f1 = (q) => { evals++; return this.score(q, grid, 1).iou - prior(q); };
+    let best; let bestV;
+    if (start) {
+      best = clampP({ lk: 0, ox: 0, oy: 0, fov: 40, ...start });
+      bestV = f1(best);
+    } else {
+      const scored = [];
+      for (const az of [-90, -60, -35, -15, 0, 15, 35, 60, 90]) for (const el of [6, 18, 32]) { const q = clampP({ az, el, fov: 40, sy: 1, sz: 1 }); scored.push([f1(q), q]); }
+      scored.sort((a, c) => c[0] - a[0]);
+      [bestV, best] = scored[0];
+      // the other lenses, from the best directions that are really different (25° apart)
+      const peaks = [];
+      for (const s of scored) { if (peaks.every((pk) => Math.abs(pk[1].az - s[1].az) >= 25)) peaks.push(s); if (peaks.length === 3) break; }
+      for (const [, q0] of peaks) for (const fov of [24, 60, 70]) { const q = clampP({ ...q0, fov }); const v = f1(q); if (v > bestV) { bestV = v; best = q; } }
+      if (cropped) {
+        const dx = (T.r && b.x1 >= grid.gw - edge ? 1 : 0) - (T.l && b.x0 <= edge ? 1 : 0);
+        const dy = (T.b && b.y1 >= grid.gh - edge ? 1 : 0) - (T.t && b.y0 <= edge ? 1 : 0);
+        for (const lk of [0.3, 0.6]) { const q = clampP({ ...best, lk, ox: dx * 0.25 * b.w * lk, oy: dy * 0.25 * b.h * lk }); const v = f1(q); if (v > bestV) { bestV = v; best = q; } }
+      }
     }
-    RS = 2;
-    this.alignCache = new Map();
-    const sc = this.score(best, grid);
+    // the placement nudges matter only for a piece the photo cuts off; otherwise every try reuses its placement render,
+    // and the full-resolution polish below sets the last half cell
+    const keys = cropped ? ['az', 'el', 'fov', 'sy', 'sz', 'lk', 'ox', 'oy'] : ['az', 'el', 'fov', 'sy', 'sz'];
+    [best, bestV] = descend(best, bestV, 1, keys,
+      { az: start ? 6 : 10, el: start ? 4 : 7, fov: 0.2, sy: 0.16, sz: 0.12, lk: 0.12, ox: Math.max(2, b.w * 0.06), oy: Math.max(2, b.h * 0.06) },
+      start ? 140 : 320);
+    // the coarse render placed the piece within 1.5 cells: a short polish of the placement at full resolution
+    this.warm = null;
+    const v2 = this.score(best, grid, 2).iou - prior(best);
+    [best] = descend(best, v2, 2, ['lk', 'ox', 'oy'], { lk: 0.03, ox: 0.8, oy: 0.8 }, evals + 24);
+    const sc = this.score(best, grid, 2);
     return { ...best, iou: sc.iou, evals, cropped, pose: sc.pose };
   }
 
-  // How much the match changes when depth or height move by ±20% at the fitted camera: near zero means this view
-  // cannot tell that size (the user should check it). -> { sy: drop, sz: drop }
+  // How much the match changes when depth or height move by ±20% at the fitted camera (re-placed each time): near
+  // zero means this view cannot tell that size (the user should check it). -> { sy: change, sz: change }
   sensitivity(cut, p) {
     const grid = toGrid(cut);
     this.alignCache = new Map();
-    RS = 2;
-    const base = this.score(p, grid).iou;
+    this.warm = null;
+    const base = this.score(p, grid, 2).iou;
     const out = {};
     for (const key of ['sy', 'sz']) {
-      // ±20 %: at ±10 % a silhouette's pixel noise is about as large as the effect
-      const lo = this.score({ ...p, [key]: p[key] * 0.8 }, grid).iou;
-      const hi = this.score({ ...p, [key]: p[key] * 1.2 }, grid).iou;
-      out[key] = Math.max(0, base - (lo + hi) / 2);
+      const lo = this.score({ ...p, [key]: p[key] * 0.8 }, grid, 2).iou;
+      const hi = this.score({ ...p, [key]: p[key] * 1.2 }, grid, 2).iou;
+      // the larger of the two changes: the fit sits on the slope the proportion prior leaves, so an average of both
+      // sides would cancel exactly the change that shows the size is seen
+      out[key] = Math.max(Math.abs(base - lo), Math.abs(base - hi));
     }
+    // depth and height together against the width: near zero in a side view, where the width runs along the line of sight
+    const lo = this.score({ ...p, sy: p.sy * 0.8, sz: p.sz * 0.8 }, grid, 2).iou;
+    const hi = this.score({ ...p, sy: p.sy * 1.2, sz: p.sz * 1.2 }, grid, 2).iou;
+    out.sx = Math.max(Math.abs(base - lo), Math.abs(base - hi));
     return out;
   }
 
@@ -395,7 +446,7 @@ export class Fitter {
     out.width = W; out.height = H;
     const ctx = out.getContext('2d');
     ctx.drawImage(photoCanvas, 0, 0);
-    const pose = p.pose || this.aligned(p, toGrid(cut));
+    const pose = p.pose || this.aligned(p, toGrid(cut), 2).q;
     const buf = this.render(pose, W, H);
     const inside = (x, y) => x >= 0 && y >= 0 && x < W && y < H && buf[((H - 1 - y) * W + x) * 4] > 127;
     const img = ctx.getImageData(0, 0, W, H);
@@ -418,7 +469,7 @@ export class Fitter {
   // glare do not darken or wash out the colour. -> { partName: [r, g, b] } (parts with < 30 good pixels are left out)
   partColours(photoCanvas, cut, p) {
     const W = photoCanvas.width; const H = photoCanvas.height;
-    const pose = p.pose || this.aligned(p, toGrid(cut));
+    const pose = p.pose || this.aligned(p, toGrid(cut), 2).q;
     // part ids: a flat colour per part
     const idMats = this.group.children.map((m) => new THREE.MeshBasicMaterial({ color: new THREE.Color().setRGB((m.userData.id & 255) / 255, 0, 0, THREE.LinearSRGBColorSpace), side: THREE.DoubleSide, toneMapped: false }));
     this.pose(pose, W / H);

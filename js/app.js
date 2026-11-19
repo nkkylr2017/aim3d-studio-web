@@ -58,6 +58,7 @@ const UI = {
   pickBox: ['حدّد القطعة في الصورة', 'Select the piece in the photo'], useBox: ['استعمل هذا التحديد', 'Use this selection'], cancelBox: ['إلغاء', 'Cancel'],
   boxNote: ['اسحب مستطيلاً حول القطعة التي تريدها. مفيد لصور الغرف: تُقصّ هذه القطعة وحدها، وتقدر تأخذ قطعة ثانية من نفس الصورة بعد الإدراج.', 'Drag a rectangle around the piece you want. Useful for room photos: only that piece is cut out, and you can take another piece from the same photo after inserting.'],
   boxed: ['حدّدتَ قطعة من الصورة.', 'You selected a piece of the photo.'],
+  senseW: ['العرض غير واضح من زاوية هذه الصورة (صورة جانبية): تأكد منه أو اكتبه.', 'The width is not clear from the angle of this photo (a side view): check it or type it.'],
   senseD: ['العمق غير واضح من زاوية هذه الصورة: تأكد منه أو اكتبه.', 'The depth is not clear from this photo\'s angle: check it or type it.'],
   senseH: ['الارتفاع غير واضح من زاوية هذه الصورة: تأكد منه أو اكتبه.', 'The height is not clear from this photo\'s angle: check it or type it.'],
   pasted: ['قرأتُ: عرض {w} × عمق {d} × ارتفاع {h} سم. إن كان الترتيب في المصدر مختلفاً فبدّل الخانات.', 'Read as width {w} × depth {d} × height {h} cm. If the source lists them in another order, swap the fields.'],
@@ -637,6 +638,7 @@ function useBox() {
 function showSense() {
   const s = state.sense;
   const notes = [];
+  if (s && s.sx < 0.02 && !(Number(state.w) > 0)) notes.push(t('senseW'));
   if (s && s.sy < 0.02 && !(Number(state.d) > 0)) notes.push(t('senseD'));
   if (s && s.sz < 0.02 && !(Number(state.h) > 0)) notes.push(t('senseH'));
   const el = $('#senseNote');
