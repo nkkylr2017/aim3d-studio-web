@@ -6,6 +6,8 @@ import { Fitter, plainCutout, clean } from './fit.js';
 import { readGLB, toPart, sized } from './ai.js';
 import { toGLB, toDAE, download } from './export.js';
 import { crc32 } from './rng.js';
+import { makeModel } from './engines.js';
+import { GEMINI_MODELS, analysisPrompt, analysisSchema, geminiBody, parseAnalysis, askGemini } from './vision.js';
 
 const $ = (s) => document.querySelector(s);
 const store = {
@@ -66,13 +68,19 @@ const UI = {
   pasted: ['قرأتُ: عرض {w} × عمق {d} × ارتفاع {h} سم. إن كان الترتيب في المصدر مختلفاً فبدّل الخانات.', 'Read as width {w} × depth {d} × height {h} cm. If the source lists them in another order, swap the fields.'],
   partColours: ['ألوان كل جزء مأخوذة من مكانه في الصورة.', 'Each part\'s colour is taken from where it shows in the photo.'],
   aiMake: ['اصنع المجسم بالذكاء الاصطناعي', 'Make the model with AI'], aiCancel: ['إيقاف', 'Stop'],
-  aiNote: ['للقطع غير الأثاث التسعة (مصباح، نبتة، تحفة…). عند الضغط تُرسل الصورة إلى ذكاء اصطناعي مجاني على Hugging Face عبر سكتشب، وترجع مجسماً. الوقت المجاني محدود يومياً.', 'For pieces outside the nine furniture types (a lamp, a plant, decor…). Pressing it sends the photo to a free AI on Hugging Face through SketchUp and brings back a model. Free time is limited per day.'],
-  aiWebOnly: ['صنع المجسم بالذكاء الاصطناعي يعمل داخل سكتشب (إضافة AIM 3D Studio Web).', 'Making a model with AI works inside SketchUp (the AIM 3D Studio Web extension).'],
+  aiNote: ['للقطع غير الأثاث التسعة (مصباح، نبتة، تحفة…)، أو لمجسم طبق الأصل. عند الضغط تُرسل الصورة إلى ذكاء اصطناعي مجاني على Hugging Face وترجع مجسماً. الوقت المجاني محدود يومياً.', 'For pieces outside the nine furniture types (a lamp, a plant, decor…), or a model exactly like the photo. Pressing it sends the photo to a free AI on Hugging Face and brings back a model. Free time is limited per day.'],
+  aiStep_connect: ['{e}: أتصل…', '{e}: connecting…'], aiStep_upload: ['{e}: أرفع الصورة…', '{e}: uploading the photo…'],
+  aiStep_separate: ['{e}: أفصل القطعة عن الخلفية…', '{e}: separating the object…'], aiStep_prepare: ['{e}: أجهّز الصورة…', '{e}: preparing the photo…'],
+  aiStep_gpu: ['{e}: يصنع الشكل (وقت GPU مجاني، عادة 1 إلى 3 دقائق)…', '{e}: making the shape (free GPU, usually 1–3 min)…'],
+  aiStep_reduce: ['{e}: أخفّف المجسم…', '{e}: reducing the mesh…'], aiStep_export: ['{e}: أصدّر الملف…', '{e}: exporting…'],
+  aiStep_download: ['{e}: أنزّل المجسم…', '{e}: downloading the model…'],
+  aiFailAll: ['ما قدر أي ذكاء اصطناعي مجاني يصنع المجسم الحين. {e}', 'No free AI could make the model now. {e}'],
+  aiToken: [' رمز Hugging Face غير صحيح؛ صحّحه أو امسحه.', ' The Hugging Face token is not valid; fix it or clear it.'],
   aiNeedPhoto: ['أضف صورة القطعة أولاً.', 'Add a photo of the piece first.'],
   aiReceiving: ['يصل المجسم… {p}٪', 'Receiving the model… {p}%'],
   aiDone: ['صنعه {e}. اكتب مقاساً واحداً تعرفه ليصير بحجمه الحقيقي.', 'Made by {e}. Type one measurement you know to give it its real size.'],
   aiFail: ['{e}', '{e}'], aiQuota: [' انتهى الوقت المجاني لليوم؛ رمز Hugging Face مجاني يعطيك وقتاً أكثر.', ' The free time is used up for today; a free Hugging Face token gives more.'],
-  token: ['رمز Hugging Face (اختياري)', 'Hugging Face token (optional)'], tokenSave: ['حفظ', 'Save'], tokenSaved: ['محفوظ في سكتشب على هذا الجهاز.', 'Saved in SketchUp on this computer.'],
+  token: ['رمز Hugging Face (اختياري)', 'Hugging Face token (optional)'], tokenSave: ['حفظ', 'Save'], tokenSaved: ['انحفظ الرمز عندك (في سكتش اب أو في هذا المتصفح)، وما يُرسل إلا لـ Hugging Face.', 'Saved with you (in SketchUp or in this browser); it goes only to Hugging Face.'],
   aiNoEdit: ['قطع الذكاء الاصطناعي لا تُعدَّل من هنا؛ اصنعها من جديد.', 'AI pieces cannot be edited from here; make them again.'],
   cutting: ['أقصّ القطعة من الصورة…', 'Cutting the piece out of the photo…'],
   cutDownload: ['تنزيل نموذج القصّ مرة واحدة: {a} من {b} م.ب', 'Downloading the cut-out model once: {a} of {b} MB'],
@@ -81,6 +89,29 @@ const UI = {
   fitted: ['طابقتُ الشكل مع الصورة: تطابق {p}٪. «قارن بالصورة» يريك الفرق.', 'Matched to the photo: {p}% overlap. Compare with photo shows the difference.'],
   fittedLow: ['تطابق ضعيف مع الصورة ({p}٪): ربما النوع أو التفاصيل مختلفة، أو الصورة فيها أكثر من قطعة.', 'Weak match with the photo ({p}%): the piece or its details may differ, or the photo shows more than one piece.'],
   cutStalled: ['توقف تحميل أداة القص أو القص نفسه. جرّب مرة ثانية، أو حدّد القطعة بمربع.', 'The cut-out tool stopped responding while loading or cutting. Try again, or select the piece with a box.'],
+  seeAI: ['اقرأ التفاصيل بالذكاء الاصطناعي (ترسل الصورة لـ Google)', 'Read the details with AI (sends the photo to Google)'],
+  seeAIWorking: ['الذكاء الاصطناعي يقرأ تفاصيل الصورة…', 'The AI is reading the photo details…'],
+  seeAIDone: ['قرأ الذكاء الاصطناعي: {d}', 'The AI read: {d}'],
+  seeAIFail: ['ما قدر الذكاء الاصطناعي يقرأ التفاصيل ({e}). استعملتُ التعرّف العادي.', 'The AI could not read the details ({e}); the usual recognition is used.'],
+  seeAINoToken: ['قراءة التفاصيل تحتاج مفتاح Gemini (تحت).', 'Reading the details needs a Gemini key (below).'],
+  seeAIBadKey: ['مفتاح Gemini غير صحيح', 'the Gemini key is not valid'],
+  seeAIQuota: ['خلص حد Gemini المجاني الحين، جرّب بعد دقيقة أو بكرة', 'the free Gemini limit is used up for now; try in a minute or tomorrow'],
+  seeAINet: ['ما وصلنا لـ Google، تأكد من الإنترنت', 'Google could not be reached; check the internet connection'],
+  seeAIUnreadable: ['جواب ما ينقرأ', 'an answer that could not be read'],
+  gemini: ['مفتاح Gemini (لقراءة التفاصيل)', 'Gemini key (to read the details)'],
+  geminiHint: ['مجاني من aistudio.google.com/apikey. يبقى عندك (في سكتش اب أو في هذا المتصفح) وما يُرسل إلا لـ Google.', 'Free from aistudio.google.com/apikey. It stays with you (in SketchUp or in this browser) and goes only to Google.'],
+  geminiChange: ['تغيير مفتاح Gemini', 'Change the Gemini key'],
+  geminiForget: ['احذف المفتاح', 'Remove the key'],
+  geminiRemoved: ['انحذف مفتاح Gemini.', 'Gemini key removed.'],
+  anTitle: ['قراءة الذكاء الاصطناعي', 'What the AI read'],
+  anSize: ['المقاس المتوقع: {w} × {d} × {h} سم ({c})', 'Likely size: {w} × {d} × {h} cm ({c})'],
+  anSure_low: ['تقدير تقريبي', 'a rough guess'], anSure_medium: ['تقدير متوسط', 'a fair estimate'], anSure_high: ['تقدير قوي', 'a firm estimate'],
+  anUseSize: ['استعمل هذا المقاس', 'Use this size'],
+  anTip: ['نصيحة: {t}', 'Tip: {t}'],
+  anBy: ['قرأها {m}', 'Read by {m}'],
+  geminiEmpty: ['الصق المفتاح في الحقل أولاً (Ctrl+V)، ثم اضغط حفظ.', 'Paste the key into the field first (Ctrl+V), then press Save.'],
+  geminiSaved: ['حُفظ مفتاح Gemini.', 'Gemini key saved.'],
+  geminiSavedRead: ['حُفظ مفتاح Gemini. الذكاء الاصطناعي يقرأ تفاصيل الصورة…', 'Gemini key saved. The AI is reading the photo details…'],
   exactAI: ['تبيه طبق الأصل من الصورة؟ اصنعه بالذكاء الاصطناعي (قطعة واحدة)', 'Want it exactly like the photo? Make it with AI (one piece)'],
   refit: ['طابق مع الصورة', 'Match to photo'], compare: ['قارن بالصورة', 'Compare with photo'], closeCompare: ['رجوع للمجسم', 'Back to the model'],
   compareNote: ['اللون الأخضر: شكل المجسم كما تراه الكاميرا. الخط البرتقالي: حدوده. ما خارجه من الصورة لم يُغطَّ.', 'Green: the model as the camera sees it. Orange line: its outline. Photo outside it is not covered.'],
@@ -326,6 +357,8 @@ async function takePhoto(file) {
   scheduleBuild();
   const shot = await createImageBitmap(c);
   if (mine === photoJob) recognise(shot); else shot.close();
+  paintAnalysis();
+  if (mine === photoJob && seeOn()) readDetails();
 }
 
 let seeWorker = null;
@@ -356,7 +389,7 @@ function applySeen(r) {
   const sure = r.type !== 'other' && r.confidence >= 0.45;
   if (sure) state.wantFit = true; // matched to the photo once the recognised piece is built
   if (sure && !state.typeByUser) state.type = r.type;
-  if (r.type === 'other' && r.confidence >= 0.45 && !state.typeByUser && inSketchUp) state.type = 'ai';
+  if (r.type === 'other' && r.confidence >= 0.45 && !state.typeByUser) state.type = 'ai';
   // what the earlier photo set gives way to this one; choices made by hand since this photo stay
   if (sure) state.fromPhoto = {};
   for (const type of Object.keys(sure ? r.styles || {} : {})) {
@@ -376,9 +409,147 @@ function applySeen(r) {
   }
   status('see', () => (r.type === 'other' ? t('seeOther')
     : fill(t(sure ? 'seeResult' : 'seeLow'), { type: TYPE_T[r.type] ? TYPE_T[r.type][lang === 'ar' ? 0 : 1] : r.type, p: nf(p) })));
+  // the vision model reads details far better: what it said for this photo stands over this guess
+  if (state.aiSeen && state.aiSeen.photo === photoJob) applyAISeen(state.aiSeen);
   renderForm();
   scheduleBuild();
 }
+
+// ---------------------------------------------------------------- the photo read by AI (Gemini, the user's own key)
+// Only after the user switched it on. On the website the key stays in this browser and the photo goes from the
+// browser to Google; inside SketchUp the extension keeps the key and carries the same request. The question and the
+// answer's schema come from the option lists (vision.js), so a new option is asked about without touching this.
+const relay = () => !!(window.sketchup && window.sketchup.aim3d_see); // the extension carries the request
+const seeOn = () => (relay() ? !!(host && host.see_ai) : store.get('see') === '1');
+const hasKey = () => (relay() ? !!(host && host.has_gemini) : !!store.get('gemini'));
+const optEn = (k, v) => (OPT_T[k] && OPT_T[k].v && OPT_T[k].v[v] ? OPT_T[k].v[v][1] : v);
+function seePrompt() {
+  return analysisPrompt(TYPES, OPTIONS, (k) => TYPE_T[k][1], (k) => (OPT_T[k] ? OPT_T[k].en : k), optEn);
+}
+let seeSchemaCache = null;
+const seeSchema = () => (seeSchemaCache = seeSchemaCache || analysisSchema(TYPES, OPTIONS));
+let aiSeeJob = 0;
+let aiSeeFor = 0;
+let aiAbort = null;
+function readDetails(src) {
+  if (!state.photoCanvas) return;
+  if (!hasKey()) { status('seeAI', () => t('seeAINoToken'), true); paintKeyRow(); return; }
+  const big = src || state.photoBig || state.photoCanvas;
+  const k = Math.min(1, 1024 / Math.max(big.width, big.height));
+  const c = document.createElement('canvas');
+  c.width = Math.max(8, Math.round(big.width * k)); c.height = Math.max(8, Math.round(big.height * k));
+  c.getContext('2d').drawImage(big, 0, 0, c.width, c.height);
+  const id = ++aiSeeJob;
+  state.aiSeen = null;
+  aiSeeFor = photoJob;
+  paintAnalysis();
+  status('seeAI', () => t('seeAIWorking'));
+  const body = geminiBody(seePrompt(), c.toDataURL('image/jpeg', 0.9), seeSchema(), { thinking: window.__seeThinking });
+  if (aiAbort) aiAbort.abort();
+  aiAbort = null;
+  if (relay()) { window.sketchup.aim3d_see(JSON.stringify({ job: id, body, models: GEMINI_MODELS })); return; }
+  aiAbort = new AbortController();
+  const url = new URLSearchParams(location.search).get('geminiUrl') || undefined; // tests: a local stand-in for Google
+  askGemini(store.get('gemini'), body, { signal: aiAbort.signal, url })
+    .then((r) => window.aim3dSee({ job: id, status: 'done', text: r.text, model: r.model }),
+      (e) => { if (e.name !== 'AbortError') window.aim3dSee({ job: id, status: 'error', error: e.message, bad_key: e.kind === 'key', quota: e.kind === 'quota', net: e.kind === 'net' }); });
+}
+function stopReading() {
+  aiSeeJob++;
+  if (aiAbort) aiAbort.abort();
+  aiAbort = null;
+  if (window.sketchup && window.sketchup.aim3d_see_cancel) window.sketchup.aim3d_see_cancel();
+}
+function applyAISeen(seen) {
+  if (!state.typeByUser) {
+    if (TYPES.includes(seen.type)) state.type = seen.type;
+    else if (seen.type === 'other') state.type = 'ai';
+  }
+  if (!TYPES.includes(seen.type)) return;
+  const vals = state.vals[seen.type] = state.vals[seen.type] || {};
+  const mine = state.userSet[seen.type] || {};
+  const here = state.fromPhoto[seen.type] = state.fromPhoto[seen.type] || {};
+  for (const [k, v] of Object.entries(seen.attrs)) {
+    if (mine[k]) continue;
+    vals[k] = v;
+    here[k] = true;
+  }
+}
+function seenSummary(seen) {
+  const ar = lang === 'ar';
+  const parts = [TYPE_T[seen.type] ? TYPE_T[seen.type][ar ? 0 : 1] : seen.type];
+  for (const [k, v] of Object.entries(seen.attrs)) {
+    const o = OPT_T[k];
+    if (o && o.v && o.v[v]) parts.push(o.v[v][ar ? 0 : 1]);
+    else if (/^\d+$/.test(v)) parts.push(`${o ? o[ar ? 'ar' : 'en'] : k} ${nf(Number(v))}`);
+  }
+  return parts.join(ar ? '، ' : ', ');
+}
+// The analysis card: what the AI saw, part by part, its size estimate (one click puts it in the size fields), the
+// photo's problems and a tip. The Arabic notes come from the AI as written; in English only the names are shown.
+function paintAnalysis() {
+  const a = state.aiSeen;
+  const box = $('#analysis');
+  box.hidden = !a || a.photo !== photoJob;
+  if (box.hidden) return;
+  const ar = lang === 'ar';
+  $('#anName').textContent = (ar ? a.nameAr || a.name : a.name || a.nameAr) || '';
+  $('#anDesc').textContent = ar ? a.descAr : '';
+  $('#anDesc').hidden = !ar || !a.descAr;
+  const ul = $('#anParts');
+  ul.textContent = '';
+  for (const l of a.layers) {
+    const li = document.createElement('li');
+    const b = document.createElement('b');
+    b.textContent = `${ar ? l.ar || l.en : l.en || l.ar}${l.count > 1 ? ` × ${nf(l.count)}` : ''}`;
+    li.appendChild(b);
+    if (ar && l.detail) li.appendChild(document.createTextNode(` — ${l.detail}`));
+    ul.appendChild(li);
+  }
+  ul.hidden = !a.layers.length;
+  const s = a.size;
+  $('#anSize').hidden = !s;
+  $('#anUseSize').hidden = !s;
+  if (s) $('#anSize').textContent = fill(t('anSize'), { w: nf(s.w), d: nf(s.d), h: nf(s.h), c: t(`anSure_${a.sizeSure}`) });
+  const issues = $('#anIssues');
+  issues.textContent = '';
+  if (ar) for (const x of a.issues) { const li = document.createElement('li'); li.textContent = x; issues.appendChild(li); }
+  issues.hidden = !ar || !a.issues.length;
+  $('#anTip').textContent = ar && a.tip ? fill(t('anTip'), { t: a.tip }) : '';
+  $('#anTip').hidden = !ar || !a.tip;
+  $('#anBy').textContent = fill(t('anBy'), { m: a.model || 'Gemini' });
+}
+function useAISize() {
+  const s = state.aiSeen && state.aiSeen.size;
+  if (!s) return;
+  for (const [k, v] of Object.entries(s)) { state[k] = String(v); $(`#${k}`).value = String(v); }
+  if (state.cut) state.wantFit = true;
+  showSense();
+  scheduleBuild();
+}
+window.aim3dSee = (m) => {
+  if (!m || m.job !== aiSeeJob || aiSeeFor !== photoJob) return; // an older photo's answer
+  aiAbort = null;
+  if (m.status === 'error') {
+    if (m.bad_key) { keyBad = true; paintKeyRow(); } // the key field comes back for a new key
+    const why = m.error === 'no_key' ? null
+      : m.bad_key ? t('seeAIBadKey') : m.quota ? t('seeAIQuota') : m.net ? t('seeAINet') : String(m.error).slice(0, 160);
+    status('seeAI', () => (why == null ? t('seeAINoToken') : fill(t('seeAIFail'), { e: why })), true);
+    if (why == null) paintKeyRow();
+    return;
+  }
+  const seen = parseAnalysis(String(m.text || ''), TYPES, OPTIONS);
+  if (!seen) { status('seeAI', () => fill(t('seeAIFail'), { e: t('seeAIUnreadable') }), true); return; }
+  keyBad = false;
+  state.aiSeen = { ...seen, photo: photoJob, model: m.model };
+  applyAISeen(state.aiSeen);
+  if (state.cut) state.wantFit = true; // the piece as read is matched to the photo again
+  status('seeAI', () => fill(t('seeAIDone'), { d: seenSummary(seen) }));
+  paintKeyRow();
+  paintAnalysis();
+  renderForm();
+  scheduleBuild();
+};
 
 // ---------------------------------------------------------------- form
 function renderForm() {
@@ -432,7 +603,7 @@ function paintViewNote() {
   n.textContent = viewNote ? t(viewNote) : '';
 }
 function paintStatus(where) {
-  const el = where === 'see' ? $('#seeState') : where === 'fit' ? $('#fitState') : where === 'ai' ? $('#aiState') : $('#buildState');
+  const el = where === 'see' ? $('#seeState') : where === 'seeAI' ? $('#seeAIState') : where === 'fit' ? $('#fitState') : where === 'ai' ? $('#aiState') : $('#buildState');
   const st = shown[where];
   el.textContent = st ? st.make() : '';
   el.classList.toggle('bad', !!(st && st.bad));
@@ -446,6 +617,8 @@ function applyLang() {
   renderForm();
   renderActions(state.sims ? 'physics' : 'drawn');
   paintStatus('see');
+  paintAnalysis();
+  paintStatus('seeAI');
   paintStatus('build');
   paintStatus('fit');
   paintStatus('ai');
@@ -478,14 +651,42 @@ function showAI() {
 }
 let aiJob = 0;
 let aiChunks = [];
+let aiWebAbort = null;
+const relayAI = () => !!(window.sketchup && window.sketchup.aim3d_ai_start); // the extension runs the engines
 function makeAI() {
-  if (!window.sketchup || !window.sketchup.aim3d_ai_start) { status('ai', () => t('aiWebOnly'), true); return; }
   if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
   aiChunks = [];
   const id = ++aiJob;
   $('#aiMake').disabled = true;
   $('#aiCancel').hidden = false;
-  window.sketchup.aim3d_ai_start(JSON.stringify({ job: id, image: aiPhoto(), quality: state.quality, ...(window.__aiOpts || {}) }));
+  const photo = aiPhoto();
+  if (relayAI()) {
+    window.sketchup.aim3d_ai_start(JSON.stringify({ job: id, image: photo, quality: state.quality, ...(window.__aiOpts || {}) }));
+    return;
+  }
+  // the website: the browser asks the Spaces itself
+  if (aiWebAbort) aiWebAbort.abort();
+  aiWebAbort = new AbortController();
+  fetch(photo).then((r) => r.blob()).then((image) => makeModel({
+    image, token: store.get('hf') || '', quality: state.quality, signal: aiWebAbort.signal, ...(window.__aiOpts || {}),
+    onStatus: (step, engine) => { if (id === aiJob) status('ai', () => fill(t(`aiStep_${step}`), { e: engine })); },
+  })).then((r) => { if (id === aiJob) gotModel(r.glb, r.engine); },
+    (e) => {
+      if (id !== aiJob || e.name === 'AbortError') return;
+      $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
+      status('ai', () => fill(t('aiFailAll'), { e: e.message }) + (e.token ? t('aiToken') : e.quota ? t('aiQuota') : ''), true);
+    });
+}
+async function gotModel(buffer, engine) {
+  $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
+  try {
+    state.aiRaw = toPart(await readGLB(buffer));
+    state.aiEngine = engine;
+    status('ai', () => fill(t('aiDone'), { e: engine }));
+    showAI();
+  } catch (err) {
+    status('ai', () => fill(t('aiFail'), { e: err.message }), true);
+  }
 }
 // What the AI is sent: the photo at up to 1024 px (not the 512 px working copy). When the piece is already cut out,
 // only the piece on a transparent background, framed with a margin: the Spaces then skip their own background
@@ -535,23 +736,17 @@ window.aim3dAI = async (m) => {
     $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
     status('ai', () => fill(t('aiFail'), { e: m.error }) + (m.quota ? t('aiQuota') : ''), true);
   } else if (m.status === 'done') {
-    $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
-    try {
-      const bin = atob(aiChunks.join(''));
-      aiChunks = [];
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      state.aiRaw = toPart(await readGLB(bytes.buffer));
-      state.aiEngine = m.engine;
-      status('ai', () => fill(t('aiDone'), { e: m.engine }));
-      showAI();
-    } catch (err) {
-      status('ai', () => fill(t('aiFail'), { e: err.message }), true);
-    }
+    const bin = atob(aiChunks.join(''));
+    aiChunks = [];
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    await gotModel(bytes.buffer, m.engine);
   }
 };
 function cancelAI() {
   aiJob++;
+  if (aiWebAbort) aiWebAbort.abort();
+  aiWebAbort = null;
   if (window.sketchup && window.sketchup.aim3d_ai_cancel) window.sketchup.aim3d_ai_cancel('{}');
   $('#aiMake').disabled = false; $('#aiCancel').hidden = true; status('ai', '');
 }
@@ -652,6 +847,7 @@ function cutBox(box) {
   }
   // the selected piece is recognised on its own
   createImageBitmap(crop).then((bm) => recognise(bm));
+  if (seeOn()) readDetails(crop);
   state.typeByUser = false;
   state.wantFit = true;
 }
@@ -780,7 +976,7 @@ async function runFit() {
       status('fit', () => fill(t(pc >= 70 ? 'fitted' : 'fittedLow'), { p: nf(pc) }), pc < 70);
       $('#compare').hidden = false;
       // the fitted model is a close match of its kind; the AI copies the photo's own shape (folds, heaps) as one mesh
-      $('#exactAI').hidden = !(window.sketchup && window.sketchup.aim3d_ai_start);
+      $('#exactAI').hidden = false;
     }
   } catch (err) {
     status('fit', () => fill(t('cutFail'), { e: err.message }), true);
@@ -838,7 +1034,38 @@ function waitForSketchUp() {
     tick();
   });
 }
-window.aim3dHost = (info) => { host = info; $('#tokenRow').hidden = false; $('#token').placeholder = info.has_token ? '••••••••' : 'hf_…'; };
+window.aim3dHost = (info) => {
+  host = info; $('#tokenRow').hidden = false; $('#token').placeholder = info.has_token ? '••••••••' : 'hf_…';
+  $('#seeAI').checked = seeOn();
+  paintKeyRow();
+  if (readAfterKey && hasKey()) { readAfterKey = false; if (seeOn() && state.photo) readDetails(); }
+};
+let readAfterKey = false;
+let keyBad = false;
+let keyEdit = false;
+// the Gemini key field shows while the details are to be read and no key is saved yet, Google refused the key, or the
+// user asked to change it; "change the key" shows while a key is saved and the field is hidden
+function paintKeyRow() {
+  const on = $('#seeAI').checked;
+  $('#geminiRow').hidden = !(on && (keyBad || keyEdit || !hasKey()));
+  $('#geminiChange').hidden = !(on && $('#geminiRow').hidden);
+  $('#geminiForget').hidden = !hasKey();
+  $('#gemini').placeholder = hasKey() ? '••••••••' : 'AQ.… / AIza…';
+}
+// the key goes to SketchUp's settings when the extension keeps it, else to this browser
+function saveGeminiKey(v) {
+  if (window.sketchup && window.sketchup.aim3d_set_gemini) {
+    readAfterKey = !!v;
+    // the switch is on while the key row shows: saving the key keeps it on (sent first, so the last reply has both)
+    if (v && $('#seeAI').checked && window.sketchup.aim3d_set_see) window.sketchup.aim3d_set_see('1');
+    window.sketchup.aim3d_set_gemini(v);
+    return;
+  }
+  store.set('gemini', v);
+  if (v) store.set('see', '1');
+  paintKeyRow();
+  if (v && state.photo) readDetails();
+}
 window.aim3dInserted = (r) => {
   $('#insert').disabled = false;
   if (r && r.ok) {
@@ -979,9 +1206,48 @@ function start() {
   bimg.addEventListener('pointerup', (e) => { if (boxDrag) { boxDrag.b = boxPoint(e); drawBox(); } });
   $('#aiMake').addEventListener('click', makeAI);
   $('#aiCancel').addEventListener('click', cancelAI);
-  $('#tokenSave').addEventListener('click', () => { if (window.sketchup && window.sketchup.aim3d_set_token) { window.sketchup.aim3d_set_token($('#token').value.trim()); $('#token').value = ''; status('ai', () => t('tokenSaved')); } });
+  // the Hugging Face token: kept by the extension inside SketchUp, else in this browser; it goes only to Hugging Face
+  $('#tokenRow').hidden = false;
+  $('#token').placeholder = store.get('hf') ? '••••••••' : 'hf_…';
+  $('#tokenSave').addEventListener('click', () => {
+    const v = $('#token').value.trim().replace(/\s+/g, '');
+    if (window.sketchup && window.sketchup.aim3d_set_token) window.sketchup.aim3d_set_token(v);
+    else { store.set('hf', v); $('#token').placeholder = v ? '••••••••' : 'hf_…'; }
+    $('#token').value = '';
+    status('ai', () => t('tokenSaved'));
+  });
   $('#closeCompare').addEventListener('click', closeCompare);
   $('#refit').addEventListener('click', () => { state.wantFit = false; runFit(); });
+  $('#geminiSave').addEventListener('click', () => {
+    const v = $('#gemini').value.trim().replace(/\s+/g, '');
+    if (!v) { status('seeAI', () => t('geminiEmpty'), true); $('#gemini').focus(); return; }
+    keyBad = false;
+    keyEdit = false;
+    $('#gemini').value = '';
+    status('seeAI', () => t(state.photo ? 'geminiSavedRead' : 'geminiSaved'));
+    saveGeminiKey(v);
+  });
+  $('#gemini').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#geminiSave').click(); } });
+  $('#geminiChange').addEventListener('click', () => { keyEdit = true; paintKeyRow(); $('#gemini').focus(); });
+  $('#geminiForget').addEventListener('click', () => {
+    stopReading();
+    keyEdit = true;
+    saveGeminiKey('');
+    status('seeAI', () => t('geminiRemoved'));
+    paintKeyRow();
+  });
+  $('#anUseSize').addEventListener('click', useAISize);
+  $('#seeAI').addEventListener('change', (e) => {
+    const on = e.target.checked;
+    if (host) host.see_ai = on;
+    if (window.sketchup && window.sketchup.aim3d_set_see) window.sketchup.aim3d_set_see(on ? '1' : '0');
+    else store.set('see', on ? '1' : '0');
+    paintKeyRow();
+    if (on && state.photo) readDetails();
+    if (!on) { stopReading(); status('seeAI', ''); }
+  });
+  $('#seeAI').checked = seeOn();
+  paintKeyRow();
   $('#exactAI').addEventListener('click', () => {
     const sel = $('#type'); sel.value = 'ai'; sel.dispatchEvent(new Event('change'));
     makeAI();
@@ -1009,7 +1275,7 @@ function start() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
-  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto }; // for the tests
+  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize }; // for the tests
 }
 
 start();
