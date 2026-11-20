@@ -131,6 +131,8 @@ const UI = {
   projectSaved: ['حفظت المشروع: تفتحه بعدين وكل جزء قابل للتعديل.', 'Project saved: open it later with every part editable.'],
   projectOpened: ['فتحت المشروع ({n} أجزاء).', 'Project opened ({n} parts).'], projectBad: ['ما قدرت أفتح الملف: {e}', 'Could not open the file: {e}'],
   projectName: ['مشروع', 'project'],
+  savedTo: ['حفظت الملف: {p}', 'Saved: {p}'], saveFail: ['ما قدرت أحفظ الملف: {e}', 'Could not save the file: {e}'],
+  saveNeedsUpdate: ['الحفظ من داخل سكتش اب يحتاج تحديث الإضافة (1.4.0 أو أحدث).', 'Saving from inside SketchUp needs the extension updated (1.4.0 or later).'],
   liteName: ['مسودة محلية', 'Local draft'],
   liteWorking: ['أجهّز المسودة المحلية…', 'Preparing the local draft…'],
   liteDownload: ['أنزّل أداة العمق (مرة وحدة، حوالي 27 ميغا)… {p}٪', 'Downloading the depth tool (once, about 27 MB)… {p}%'],
@@ -863,7 +865,7 @@ async function modelBlob(kind) {
 }
 async function exportAs(kind) {
   const r = await modelBlob(kind);
-  if (r) download(r.blob, r.filename);
+  if (r) saveFile(r.blob, r.filename);
 }
 // Dragging the model out: a drag must carry its file at once, so the GLB is kept ready (made again shortly after
 // each change). Chromium (Chrome, Edge) writes a DownloadURL drag where it is dropped; elsewhere the button
@@ -1191,6 +1193,18 @@ function paintProvenance() {
   else if (p.camera.startsWith('above_')) bits.push(fill(t('provAbove'), { d: nf(Number(p.camera.slice(6))) }));
   el.textContent = bits.join(' · ');
   el.hidden = false;
+  placeProvenance();
+}
+// the line sits just above the bottom bar, however many rows the bar wraps to (a narrow window, SketchUp's dialog)
+function placeProvenance() {
+  const el = $('#provenance'); const bar = document.querySelector('main .bar');
+  if (!el || !bar) return;
+  const main = bar.parentElement.getBoundingClientRect(); const b = bar.getBoundingClientRect();
+  el.style.bottom = `${Math.round(main.bottom - b.top + 8)}px`;
+}
+if (typeof ResizeObserver !== 'undefined') {
+  const bar = document.querySelector('main .bar');
+  if (bar) new ResizeObserver(() => placeProvenance()).observe(bar);
 }
 
 // ---- the project file: save and open again with every part editable as it was (project.js)
@@ -1198,8 +1212,7 @@ function saveProject() {
   if (!doc || !doc.parts.length) return;
   const json = JSON.stringify(toProject(doc, provenance()));
   const name = (state.type === 'ai' ? `AIM ${state.aiEngine || 'model'}` : `AIM ${TYPE_T[state.type][1]}`).replace(/[\s:/\\]+/g, '-');
-  download(new Blob([json], { type: 'application/json' }), `${name}.aim3d`);
-  status('build', () => t('projectSaved'));
+  saveFile(new Blob([json], { type: 'application/json' }), `${name}.aim3d`).then((ok) => { if (ok) status('build', () => t('projectSaved')); });
 }
 async function openProject(file) {
   let r;
@@ -2001,6 +2014,35 @@ function saveGeminiKey(v) {
   paintKeyRow();
   if (v && state.photo) readDetails();
 }
+// Saving a file. SketchUp's dialog cannot download: from extension 1.4.0 the file goes to the extension, which asks
+// where in SketchUp's own save window (aim3d_save_file -> aim3dSaved). Elsewhere (and with an older extension) the
+// browser downloads it. -> true when written (or handed to the browser), false when cancelled or failed.
+let saveJob = 0;
+const savePending = new Map();
+async function saveFile(blob, filename) {
+  const su = window.sketchup && typeof window.sketchup.aim3d_save_file === 'function' ? window.sketchup : null;
+  if (!su) {
+    if (inSketchUp) status('build', () => t('saveNeedsUpdate'), true);
+    download(blob, filename);
+    return true;
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  const job = ++saveJob;
+  const done = new Promise((resolve) => savePending.set(job, resolve));
+  su.aim3d_save_file(JSON.stringify({ job, name: filename, b64: btoa(bin) }));
+  const r = await done;
+  if (r.ok) status('build', () => fill(t('savedTo'), { p: r.path }));
+  else if (!r.cancelled) status('build', () => fill(t('saveFail'), { e: r.error || '' }), true);
+  return !!r.ok;
+}
+window.aim3dSaved = (r) => {
+  const resolve = r && savePending.get(r.job);
+  if (!resolve) return;
+  savePending.delete(r.job);
+  resolve(r);
+};
 window.aim3dInserted = (r) => {
   $('#insert').disabled = false;
   if (r && r.ok) {
