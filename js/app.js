@@ -6,8 +6,8 @@ import { Fitter, plainCutout, clean } from './fit.js';
 import { readGLB, toPart, sized } from './ai.js';
 import { toGLB, toDAE, download } from './export.js';
 import { crc32 } from './rng.js';
-import { makeModel } from './engines.js';
-import { GEMINI_MODELS, analysisPrompt, analysisSchema, geminiBody, parseAnalysis, askGemini } from './vision.js';
+import { makeModel, engineQueue } from './engines.js';
+import { GEMINI_MODELS, analysisPrompt, analysisSchema, geminiBody, parseAnalysis, askGemini, judgePrompt, judgeSchema, judgeBody, parseJudge } from './vision.js';
 
 const $ = (s) => document.querySelector(s);
 const store = {
@@ -74,11 +74,47 @@ const UI = {
   aiStep_gpu: ['{e}: يصنع الشكل (وقت GPU مجاني، عادة 1 إلى 3 دقائق)…', '{e}: making the shape (free GPU, usually 1–3 min)…'],
   aiStep_reduce: ['{e}: أخفّف المجسم…', '{e}: reducing the mesh…'], aiStep_export: ['{e}: أصدّر الملف…', '{e}: exporting…'],
   aiStep_download: ['{e}: أنزّل المجسم…', '{e}: downloading the model…'],
+  judge: ['خلّ الذكاء الاصطناعي يقارن المجسم بالصورة ويصحّحه', 'Let the AI compare the model with the photo and fix it'],
+  judgeWaiting: ['أنتظر القماش يستقر قبل المقارنة…', 'Waiting for the fabric to settle before comparing…'],
+  judgeWorking: ['الجولة {r}: الذكاء الاصطناعي يقارن المجسم بالصورة…', 'Round {r}: the AI is comparing the model with the photo…'],
+  judgeRefit: ['الجولة {r}: عدّلتُ المجسم وأطابقه مع الصورة من جديد…', 'Round {r}: changed the model, matching it to the photo again…'],
+  judgeDone: ['قارن الذكاء الاصطناعي المجسم بالصورة: {s} من 10. {c}', 'The AI compared the model with the photo: {s} of 10. {c}'],
+  judgeChanged: ['غيّر {n} من الخيارات (تقدر ترجّعها من القوائم).', 'It changed {n} options (you can set them back in the lists).'],
+  judgeNoChange: ['ما شاف شي يحتاج تغيير.', 'It saw nothing to change.'],
+  judgeRound: ['الجولة {r}: {s} من 10', 'Round {r}: {s} of 10'],
+  judgeLeft: ['أكبر فرق باقي: {d}', 'Biggest difference left: {d}'],
+  judgeKept: ['بقي التغيير: التطابق مع الصورة {a}٪ ← {b}٪.', 'Change kept: match with the photo {a}% → {b}%.'],
+  judgeUndone: ['رجّعتُ هذا التغيير لأنه بعّد المجسم عن الصورة: التطابق نزل من {a}٪ إلى {b}٪.', 'Undone: it took the model away from the photo, the match fell from {a}% to {b}%.'],
+  judgeUndoing: ['الجولة {r}: التغيير بعّد المجسم عن الصورة، أرجّعه…', 'Round {r}: the change took the model away from the photo, undoing it…'],
+  judgeFail: ['ما قدرت أقارن ({e}).', 'Could not compare ({e}).'],
+  judgeNeedFit: ['المقارنة تحتاج المجسم مطابق مع الصورة أولاً.', 'Comparing needs the model matched to the photo first.'],
+  aiBest: ['جرّب كل المحركات واختر الأقرب', 'Try every engine, keep the closest'],
+  // Hugging Face's ZeroGPU day (its docs, 2026-11): 2 min without an account, 5 min with a free one, 40 min with PRO,
+  // counted again 24 h after the first use. A model takes from a few seconds to two minutes of it.
+  aiBestHint: ['تشتغل المحركات واحد بعد الثاني (عدة دقائق)، وكل مجسم ينقاس على الصورة. وقت Hugging Face المجاني في اليوم: دقيقتين بدون رمز، و5 دقائق بحساب مجاني، ويرجع بعد 24 ساعة من أول استعمال، فالمقارنة ممكن تخلّص وقت اليوم كله.', 'The engines run one after another (several minutes); each model is measured against the photo. Free Hugging Face time per day: 2 minutes without a token, 5 with a free account, back 24 hours after the first use, so comparing can use up the whole day.'],
+  aiBestNoCut: ['المقارنة تحتاج القطعة مقصوصة من الصورة: انتظر القص، أو حدّد القطعة بمربع.', 'Comparing needs the piece cut out of the photo: wait for the cut-out, or select the piece with a box.'],
+  aiBestStep: ['({i} من {n}) {s}', '({i} of {n}) {s}'],
+  aiBestScoring: ['{e}: أقيس المجسم على الصورة…', '{e}: measuring the model against the photo…'],
+  aiBestScore: ['{e}: يطابق الصورة {p}٪', '{e}: {p}% match with the photo'],
+  aiBestWorking: ['{e}: يشتغل…', '{e}: working…'],
+  aiBestUse: ['استعمل هذا', 'Use this one'], aiBestUsing: ['المستعمل الحين', 'In use'],
+  aiBestDone: ['الأقرب للصورة: {e} ({p}٪). نجح {n} من {m} محركات، وتقدر تختار غيره من تحت.', 'Closest to the photo: {e} ({p}%). {n} of {m} engines made a model; you can pick another below.'],
+  aiBestNone: ['ما نجح أي محرك الحين.', 'No engine could make the model now.'],
+  aiBestQuota: ['خلص الوقت المجاني', 'free time used up'],
+  viewsTitle: ['صور إضافية لنفس القطعة (اختياري)', 'More photos of the same piece (optional)'],
+  vBack: ['من الخلف', 'Back'], vLeft: ['من اليسار', 'Left'], vRight: ['من اليمين', 'Right'],
+  videoPick: ['أو فيديو لفّة حول القطعة', 'or a video turning around the piece'],
+  swapLR: ['بدّل اليسار واليمين', 'Swap left and right'], clearViews: ['امسح الصور الإضافية', 'Clear the extra photos'],
+  viewsHint: ['مع صور إضافية يبدأ Hunyuan3D 2mv فيطلع الخلف والجوانب أقرب للحقيقة. من الفيديو آخذ الأمام والجانبين والخلف (أرباع اللفّة).', 'With more photos Hunyuan3D 2mv goes first, so the back and sides come out closer to the real piece. From a video the front, sides and back are taken (quarter turns).'],
+  videoReading: ['أقرأ الفيديو…', 'Reading the video…'],
+  videoDone: ['أخذت من الفيديو الأمام والجانبين والخلف. تأكد أن اليسار واليمين في مكانهم.', 'Took the front, sides and back from the video. Check that left and right are the right way round.'],
+  videoBad: ['ما قدرت أقرأ الفيديو. جرّب MP4 أو WebM.', 'Could not read the video. Try MP4 or WebM.'],
   aiFailAll: ['ما قدر أي ذكاء اصطناعي مجاني يصنع المجسم الحين. {e}', 'No free AI could make the model now. {e}'],
   aiToken: [' رمز Hugging Face غير صحيح؛ صحّحه أو امسحه.', ' The Hugging Face token is not valid; fix it or clear it.'],
   aiNeedPhoto: ['أضف صورة القطعة أولاً.', 'Add a photo of the piece first.'],
   aiReceiving: ['يصل المجسم… {p}٪', 'Receiving the model… {p}%'],
   aiDone: ['صنعه {e}. اكتب مقاساً واحداً تعرفه ليصير بحجمه الحقيقي.', 'Made by {e}. Type one measurement you know to give it its real size.'],
+  aiQuotaToken: [' خلص وقتك المجاني على Hugging Face لليوم، ويرجع بكرة.', ' Your free Hugging Face time is used up for today; it comes back tomorrow.'],
   aiFail: ['{e}', '{e}'], aiQuota: [' انتهى الوقت المجاني لليوم؛ رمز Hugging Face مجاني يعطيك وقتاً أكثر.', ' The free time is used up for today; a free Hugging Face token gives more.'],
   token: ['رمز Hugging Face (اختياري)', 'Hugging Face token (optional)'], tokenSave: ['حفظ', 'Save'], tokenSaved: ['انحفظ الرمز عندك (في سكتش اب أو في هذا المتصفح)، وما يُرسل إلا لـ Hugging Face.', 'Saved with you (in SketchUp or in this browser); it goes only to Hugging Face.'],
   aiNoEdit: ['قطع الذكاء الاصطناعي لا تُعدَّل من هنا؛ اصنعها من جديد.', 'AI pieces cannot be edited from here; make them again.'],
@@ -164,6 +200,7 @@ const state = {
   type: 'bed', vals: {}, fromPhoto: {}, userSet: {}, typeByUser: false,
   w: '', d: '', h: '', quality: 'light', colour: 'white', editing: false,
   cut: null, photoCanvas: null, photoBig: null, box: null, partColors: null, sense: null, fitDims: null, fitResult: null, wantFit: false, aiRaw: null, aiEngine: '',
+  aiCands: [], aiPick: -1, views: { back: null, left: null, right: null }, viewUrls: { back: null, left: null, right: null },
   photo: null, photoSeed: null, pal: null, foldShift: 0,
   sims: null, simKey: null, parts: null, items: [],
 };
@@ -331,6 +368,9 @@ async function takePhoto(file) {
   state.typeByUser = false;
   state.userSet = {};
   state.aiRaw = null;
+  state.aiCands = []; state.aiPick = -1; paintCands();
+  stopJudge(); state.judge = null; paintJudge(); status('judge', ''); $('#judge').hidden = true;
+  for (const side of ['back', 'left', 'right']) setView(side, null); // the extra photos belonged to the last piece
   state.photoSeed = crc32(bytes) & 0x7fffffff; // the same photo gives the same folds as in the extension
   state.foldShift = 0;
   const w = c.width;
@@ -458,7 +498,7 @@ function stopReading() {
   aiSeeJob++;
   if (aiAbort) aiAbort.abort();
   aiAbort = null;
-  if (window.sketchup && window.sketchup.aim3d_see_cancel) window.sketchup.aim3d_see_cancel();
+  if (window.sketchup && window.sketchup.aim3d_see_cancel) window.sketchup.aim3d_see_cancel('read');
 }
 function applyAISeen(seen) {
   if (!state.typeByUser) {
@@ -528,6 +568,14 @@ function useAISize() {
   scheduleBuild();
 }
 window.aim3dSee = (m) => {
+  // the judge's answers go to the request that waits for them
+  const pend = m && seePending.get(m.job);
+  if (pend) {
+    seePending.delete(m.job);
+    if (m.status === 'done') pend.resolve({ text: m.text, model: m.model });
+    else pend.reject(Object.assign(new Error(String(m.error || 'error')), { kind: m.bad_key ? 'key' : m.quota ? 'quota' : m.net ? 'net' : 'model' }));
+    return;
+  }
   if (!m || m.job !== aiSeeJob || aiSeeFor !== photoJob) return; // an older photo's answer
   aiAbort = null;
   if (m.status === 'error') {
@@ -603,7 +651,7 @@ function paintViewNote() {
   n.textContent = viewNote ? t(viewNote) : '';
 }
 function paintStatus(where) {
-  const el = where === 'see' ? $('#seeState') : where === 'seeAI' ? $('#seeAIState') : where === 'fit' ? $('#fitState') : where === 'ai' ? $('#aiState') : $('#buildState');
+  const el = where === 'see' ? $('#seeState') : where === 'seeAI' ? $('#seeAIState') : where === 'judge' ? $('#judgeState') : where === 'fit' ? $('#fitState') : where === 'ai' ? $('#aiState') : $('#buildState');
   const st = shown[where];
   el.textContent = st ? st.make() : '';
   el.classList.toggle('bad', !!(st && st.bad));
@@ -622,6 +670,9 @@ function applyLang() {
   paintStatus('build');
   paintStatus('fit');
   paintStatus('ai');
+  paintCands();
+  paintStatus('judge');
+  paintJudge();
   showSense();
   paintViewNote();
   $('#view').setAttribute('aria-label', t('view3d'));
@@ -638,7 +689,10 @@ async function exportAs(kind) {
   download(blob, `${name.replace(/\s+/g, '-')}.${kind}`);
 }
 
-// ---------------------------------------------------------------- AI pieces (through SketchUp)
+// ---------------------------------------------------------------- AI pieces (free engines on Hugging Face)
+// Inside SketchUp the extension runs the engines (it keeps the Hugging Face token); on the website the browser asks
+// the Spaces itself. "Best of the engines" runs them one after another, scores each model by how its outline covers
+// the photo's cut-out (the fitter, proportions locked) and keeps the closest, with the overlays side by side.
 function showAI() {
   renderActions('none');
   if (!state.aiRaw) { viewer.clear(); state.parts = []; state.items = []; $('#dims').hidden = true; status('build', ''); return false; }
@@ -649,54 +703,234 @@ function showAI() {
   status('build', () => fill(t('built'), { n: nf(1), t: nf(part.tris.length / 3) }));
   return true;
 }
-let aiJob = 0;
+let aiRun = 0; // the current request (one model, or the best of the engines): a newer one or Stop silences the older
+let aiJob = 0; // one engine run carried by the extension
 let aiChunks = [];
 let aiWebAbort = null;
-const relayAI = () => !!(window.sketchup && window.sketchup.aim3d_ai_start); // the extension runs the engines
-function makeAI() {
-  if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
-  aiChunks = [];
-  const id = ++aiJob;
-  $('#aiMake').disabled = true;
-  $('#aiCancel').hidden = false;
-  const photo = aiPhoto();
+const aiPending = new Map(); // extension job -> { resolve, reject, onStatus }
+const relayAI = () => !!(window.sketchup && window.sketchup.aim3d_ai_start);
+const hasHFToken = () => (relayAI() ? !!(host && host.has_token) : !!store.get('hf'));
+const blobToDataURL = (b) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(b); });
+function aiBusy(on) { $('#aiMake').disabled = on; $('#aiBest').disabled = on; $('#aiCancel').hidden = !on; }
+const viewBlobs = () => (['back', 'left', 'right'].some((k) => state.views[k]) ? { ...state.views } : null);
+// One model: from one engine (only) or the first engine of the chain that delivers. Resolves { glb, engine }.
+async function runEngines({ image, views = null, engine = '', only = false, onStatus = () => {} }) {
   if (relayAI()) {
-    window.sketchup.aim3d_ai_start(JSON.stringify({ job: id, image: photo, quality: state.quality, ...(window.__aiOpts || {}) }));
-    return;
-  }
-  // the website: the browser asks the Spaces itself
-  if (aiWebAbort) aiWebAbort.abort();
-  aiWebAbort = new AbortController();
-  fetch(photo).then((r) => r.blob()).then((image) => makeModel({
-    image, token: store.get('hf') || '', quality: state.quality, signal: aiWebAbort.signal, ...(window.__aiOpts || {}),
-    onStatus: (step, engine) => { if (id === aiJob) status('ai', () => fill(t(`aiStep_${step}`), { e: engine })); },
-  })).then((r) => { if (id === aiJob) gotModel(r.glb, r.engine); },
-    (e) => {
-      if (id !== aiJob || e.name === 'AbortError') return;
-      $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
-      status('ai', () => fill(t('aiFailAll'), { e: e.message }) + (e.token ? t('aiToken') : e.quota ? t('aiQuota') : ''), true);
+    const v = {};
+    for (const k of ['back', 'left', 'right']) if (views && views[k]) v[k] = await blobToDataURL(views[k]);
+    const photo = await blobToDataURL(image);
+    const id = ++aiJob;
+    aiChunks = [];
+    return new Promise((resolve, reject) => {
+      aiPending.set(id, { resolve, reject, onStatus });
+      window.sketchup.aim3d_ai_start(JSON.stringify({ job: id, image: photo, views: v, engine, only, quality: state.quality, ...(window.__aiOpts || {}) }));
     });
+  }
+  if (!aiWebAbort) aiWebAbort = new AbortController();
+  return makeModel({
+    image, views, engine, only, token: store.get('hf') || '', quality: state.quality, signal: aiWebAbort.signal, ...(window.__aiOpts || {}),
+    onStatus: (step, name) => onStatus(fill(t(`aiStep_${step}`), { e: name })),
+  });
+}
+const quotaNote = () => t(hasHFToken() ? 'aiQuotaToken' : 'aiQuota');
+const aiFailText = (e) => fill(t('aiFailAll'), { e: e.message }) + (e.token ? t('aiToken') : e.quota ? quotaNote() : '');
+async function makeAI() {
+  if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
+  const run = ++aiRun;
+  aiBusy(true);
+  state.aiCands = [];
+  paintCands();
+  try {
+    const views = viewBlobs();
+    const image = await (await fetch(aiPhoto(!!views))).blob();
+    const r = await runEngines({ image, views, onStatus: (text) => { if (run === aiRun) status('ai', () => text); } });
+    if (run === aiRun) await gotModel(r.glb, r.engine);
+  } catch (e) {
+    if (run === aiRun && e.name !== 'AbortError') status('ai', () => aiFailText(e), true);
+  } finally {
+    if (run === aiRun) aiBusy(false);
+  }
 }
 async function gotModel(buffer, engine) {
-  $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
   try {
     state.aiRaw = toPart(await readGLB(buffer));
     state.aiEngine = engine;
     status('ai', () => fill(t('aiDone'), { e: engine }));
     showAI();
+    return true;
   } catch (err) {
     status('ai', () => fill(t('aiFail'), { e: err.message }), true);
+    return false;
+  }
+}
+// How the model's outline covers the photo's cut-out, its own proportions kept; the overlay for the side by side.
+async function scoreAI(raw) {
+  state.aiRaw = raw;
+  showAI();
+  await new Promise((r) => setTimeout(r, 40)); // the new model is painted before the search takes the thread
+  if (!fitter) fitter = new Fitter(viewer.renderer);
+  fitter.setModel(state.items);
+  const r = fitter.fit(state.cut, { limits: { sy: [1, 1], sz: [1, 1] }, locked: { sy: true, sz: true } });
+  if (!r) return { iou: 0, img: null };
+  return { iou: r.iou, img: fitter.compare(state.photoCanvas, state.cut, r).toDataURL('image/jpeg', 0.8) };
+}
+async function bestOf() {
+  if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
+  if (!state.cut || !state.cut.mask || !viewer || !viewer.ok) { status('ai', () => t('aiBestNoCut'), true); return; }
+  const run = ++aiRun;
+  aiBusy(true);
+  const views = viewBlobs();
+  // TRELLIS.2 reserves more free GPU time than an anonymous visitor has: it joins with a token
+  const list = engineQueue({ views }).filter((s) => s.id !== 'trellis2' || hasHFToken());
+  const cands = state.aiCands = [];
+  state.aiPick = -1;
+  paintCands();
+  try {
+    const image = await (await fetch(aiPhoto(!!views))).blob();
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      const c = { engine: s.name };
+      cands.push(c);
+      paintCands();
+      const say = (text) => { if (run === aiRun) status('ai', () => fill(t('aiBestStep'), { i: nf(i + 1), n: nf(list.length), s: text })); };
+      say(fill(t('aiStep_connect'), { e: s.name }));
+      try {
+        const r = await runEngines({ image, views: s.views ? views : null, engine: s.id, only: true, onStatus: say });
+        if (run !== aiRun) return;
+        c.raw = toPart(await readGLB(r.glb));
+        say(fill(t('aiBestScoring'), { e: s.name }));
+        Object.assign(c, await scoreAI(c.raw));
+      } catch (e) {
+        if (e.name === 'AbortError' || run !== aiRun) return;
+        // the reason alone: the card already names the engine
+        const why = (e.tried && e.tried[0] && e.tried[0].error) || String(e.message).replace(/^No free AI could make the model now\.\s*/, '');
+        c.error = e.quota ? t('aiBestQuota') : why.replace(new RegExp(`^${s.name.replace(/[.]/g, '\\.')}:\\s*`), '').slice(0, 140);
+        if (e.token) { paintCands(); break; } // a wrong token is wrong for every engine
+      }
+      paintCands();
+    }
+    const ok = cands.filter((c) => c.raw);
+    if (!ok.length) {
+      status('ai', () => t('aiBestNone') + (cands.some((c) => c.error === t('aiBestQuota')) ? quotaNote() : ''), true);
+      state.aiRaw = null; showAI();
+      return;
+    }
+    const best = ok.reduce((a, b) => (b.iou > a.iou ? b : a));
+    useCand(cands.indexOf(best));
+    status('ai', () => fill(t('aiBestDone'), { e: best.engine, p: nf(Math.round(best.iou * 100)), n: nf(ok.length), m: nf(cands.length) }));
+  } finally {
+    if (run === aiRun) aiBusy(false);
+  }
+}
+function useCand(i) {
+  const c = (state.aiCands || [])[i];
+  if (!c || !c.raw) return;
+  state.aiRaw = c.raw;
+  state.aiEngine = c.engine;
+  state.aiPick = i;
+  showAI();
+  paintCands();
+}
+function paintCands() {
+  const box = $('#aiResults');
+  const cands = state.aiCands || [];
+  box.hidden = !cands.length;
+  box.textContent = '';
+  cands.forEach((c, i) => {
+    const card = document.createElement('div');
+    card.className = `cand${state.aiPick === i ? ' on' : ''}`;
+    if (c.img) { const im = new Image(); im.src = c.img; im.alt = ''; card.appendChild(im); }
+    const p = document.createElement('p');
+    p.textContent = c.raw ? (c.img ? fill(t('aiBestScore'), { e: c.engine, p: nf(Math.round(c.iou * 100)) }) : c.engine)
+      : c.error ? `${c.engine}: ${c.error}` : fill(t('aiBestWorking'), { e: c.engine });
+    if (c.error) p.className = 'bad';
+    card.appendChild(p);
+    if (c.raw) {
+      const b = document.createElement('button');
+      b.className = 'link'; b.type = 'button';
+      b.textContent = t(state.aiPick === i ? 'aiBestUsing' : 'aiBestUse');
+      b.disabled = state.aiPick === i;
+      b.addEventListener('click', () => useCand(i));
+      card.appendChild(b);
+    }
+    box.appendChild(card);
+  });
+}
+// ---- more photos of the same piece: three slots, or four frames from a turntable video
+function setView(side, blob) {
+  if (state.viewUrls[side]) URL.revokeObjectURL(state.viewUrls[side]);
+  state.views[side] = blob || null;
+  state.viewUrls[side] = blob ? URL.createObjectURL(blob) : null;
+  paintViews();
+}
+function paintViews() {
+  let any = false;
+  for (const side of ['back', 'left', 'right']) {
+    const slot = document.querySelector(`.slot[data-side="${side}"]`);
+    const img = slot.querySelector('img');
+    img.hidden = !state.viewUrls[side];
+    if (state.viewUrls[side]) img.src = state.viewUrls[side]; else img.removeAttribute('src');
+    slot.classList.toggle('has', !!state.views[side]);
+    any = any || !!state.views[side];
+  }
+  $('#swapLR').hidden = !(state.views.left || state.views.right);
+  $('#clearViews').hidden = !any;
+}
+// The turntable's quarter turns: the start is the front, half way the back, the quarters the sides (which side comes
+// first depends on the turn's direction: the user can swap them).
+async function framesFromVideo(file) {
+  const url = URL.createObjectURL(file);
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+  try {
+    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('video')); setTimeout(() => rej(new Error('video')), 20000); });
+    let dur = v.duration;
+    if (!Number.isFinite(dur)) {
+      // a recorded WebM often has no length written in it: seeking far past the end makes the browser find it
+      await new Promise((res) => { v.ondurationchange = res; v.onseeked = res; setTimeout(res, 5000); v.currentTime = 1e101; });
+      dur = v.duration;
+    }
+    if (!Number.isFinite(dur) || dur <= 0.2) throw new Error('video');
+    const grab = async (time) => {
+      await new Promise((res) => { v.onseeked = res; v.currentTime = Math.max(0, Math.min(dur - 0.05, time)); });
+      const k = Math.min(1, 1024 / Math.max(v.videoWidth, v.videoHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(8, Math.round(v.videoWidth * k)); c.height = Math.max(8, Math.round(v.videoHeight * k));
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.92));
+    };
+    const front = await grab(0.05);
+    const left = await grab(dur * 0.25);
+    const back = await grab(dur * 0.5);
+    const right = await grab(dur * 0.75);
+    return { front, back, left, right };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+async function takeVideo(file) {
+  if (!file) return;
+  status('ai', () => t('videoReading'));
+  try {
+    const f = await framesFromVideo(file);
+    // a new main photo clears the extra ones, so the video's front goes in first
+    if (!state.photo) await takePhoto(new File([f.front], 'video-front.jpg', { type: 'image/jpeg' }));
+    setView('back', f.back); setView('left', f.left); setView('right', f.right);
+    status('ai', () => t('videoDone'));
+  } catch (e) {
+    status('ai', () => t('videoBad'), true);
   }
 }
 // What the AI is sent: the photo at up to 1024 px (not the 512 px working copy). When the piece is already cut out,
 // only the piece on a transparent background, framed with a margin: the Spaces then skip their own background
 // removal, which takes a glossy floor's reflection or the room around it for part of the piece.
-function aiPhoto() {
+function aiPhoto(plain = false) {
   const big = state.photoBig || state.photoCanvas;
   const k = Math.min(1, 1024 / Math.max(big.width, big.height));
   const W = Math.round(big.width * k); const H = Math.round(big.height * k);
   const cut = state.cut;
-  if (!cut || !cut.mask || cut.source === 'none' || window.__aiNoCut) { // __aiNoCut: the tests compare with the plain photo
+  // plain: with more photos of the piece the Space cuts all of them out the same way
+  if (plain || !cut || !cut.mask || cut.source === 'none' || window.__aiNoCut) { // __aiNoCut: the tests compare with the plain photo
     const c = document.createElement('canvas'); c.width = W; c.height = H;
     c.getContext('2d').drawImage(big, 0, 0, W, H);
     return c.toDataURL('image/jpeg', 0.92);
@@ -728,27 +962,38 @@ function aiPhoto() {
   out.getContext('2d').drawImage(full, x0 * sx, y0 * sy, bw, bh, (side - bw) / 2, (side - bh) / 2, bw, bh);
   return out.toDataURL('image/png');
 }
-window.aim3dAI = async (m) => {
-  if (!m || m.job !== aiJob) return;
-  if (m.status === 'working') status('ai', () => m.text);
-  else if (m.status === 'chunk') { aiChunks[m.index] = m.data; status('ai', () => fill(t('aiReceiving'), { p: nf(Math.round((m.index + 1) / m.count * 100)) })); }
+// the extension's replies for one engine run (aim3dAI): progress, the GLB in pieces, the end
+window.aim3dAI = (m) => {
+  const p = m && aiPending.get(m.job);
+  if (!p) return;
+  if (m.status === 'working') p.onStatus(m.text);
+  else if (m.status === 'chunk') { aiChunks[m.index] = m.data; p.onStatus(fill(t('aiReceiving'), { p: nf(Math.round((m.index + 1) / m.count * 100)) })); }
   else if (m.status === 'error') {
-    $('#aiMake').disabled = false; $('#aiCancel').hidden = true;
-    status('ai', () => fill(t('aiFail'), { e: m.error }) + (m.quota ? t('aiQuota') : ''), true);
+    aiPending.delete(m.job);
+    // the page says "no free AI could…" in the user's language: the extension's English opening is dropped
+    const e = new Error(String(m.error || 'error').replace(/^No free AI could make the model now\.\s*/, ''));
+    e.quota = !!m.quota;
+    e.token = /token \(401\)/i.test(e.message);
+    p.reject(e);
   } else if (m.status === 'done') {
+    aiPending.delete(m.job);
     const bin = atob(aiChunks.join(''));
     aiChunks = [];
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    await gotModel(bytes.buffer, m.engine);
+    p.resolve({ glb: bytes.buffer, engine: m.engine });
   }
 };
 function cancelAI() {
-  aiJob++;
+  aiRun++;
   if (aiWebAbort) aiWebAbort.abort();
   aiWebAbort = null;
+  const stopped = Object.assign(new Error('stopped'), { name: 'AbortError' });
+  for (const p of aiPending.values()) p.reject(stopped);
+  aiPending.clear();
   if (window.sketchup && window.sketchup.aim3d_ai_cancel) window.sketchup.aim3d_ai_cancel('{}');
-  $('#aiMake').disabled = false; $('#aiCancel').hidden = true; status('ai', '');
+  aiBusy(false);
+  status('ai', '');
 }
 
 // ---------------------------------------------------------------- fitting to the photo
@@ -977,6 +1222,8 @@ async function runFit() {
       $('#compare').hidden = false;
       // the fitted model is a close match of its kind; the AI copies the photo's own shape (folds, heaps) as one mesh
       $('#exactAI').hidden = false;
+      $('#judge').hidden = false;
+      maybeAutoJudge();
     }
   } catch (err) {
     status('fit', () => fill(t('cutFail'), { e: err.message }), true);
@@ -985,6 +1232,216 @@ async function runFit() {
     // the builds during the fit skipped the physics the new looks need: it runs now, on the fitted piece
     const req = request();
     if (!state.sims && needsPhysics(req) && autoSimFor !== keyOf(req)) { autoSimFor = keyOf(req); setTimeout(settle, 50); }
+  }
+}
+
+// ---------------------------------------------------------------- the AI compares the model with the photo (judge)
+// Render and compare: the photo and a grey render of the fitted model from the same camera, cropped alike, go to the
+// vision model with the current options; options the photo clearly contradicts are changed (never the user's own),
+// the piece is rebuilt and matched again, and a second round checks the result. A value once replaced is not offered
+// again, so the loop cannot swing back and forth. The outline is the referee: a round whose changes take the model's
+// outline further from the photo (by more than JUDGE_SLACK) is undone and its values ruled out (2026-11-20, studio
+// frame: round 2 turned the piled throw into a heap and the match fell from 85.6 to 84.4 %, measured alike before and
+// after; the fabric's physics is seeded, so such a fall is the change, not noise). Runs by itself once per photo when
+// "read the details" is on.
+const JUDGE_SLACK = 0.005;
+let judgeRun = 0;
+let judgeJob = 1000000; // the extension's job numbers for the judge, apart from the reading's
+let judging = false;
+const seePending = new Map();
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(test, ms) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { if (test()) return true; await sleepMs(250); }
+  return false;
+}
+// one vision request on the judge's channel: the extension carries it inside SketchUp, the browser asks on the website
+function askVision(body, signal) {
+  if (relay()) {
+    const id = ++judgeJob;
+    return new Promise((resolve, reject) => {
+      seePending.set(id, { resolve, reject });
+      window.sketchup.aim3d_see(JSON.stringify({ job: id, body, models: GEMINI_MODELS, channel: 'judge' }));
+    });
+  }
+  const url = new URLSearchParams(location.search).get('geminiUrl') || undefined;
+  return askGemini(store.get('gemini'), body, { signal, url });
+}
+// the photo and the render, cropped to the piece (its cut-out's box with a margin) at up to 768 px
+function judgePictures() {
+  const cut = state.cut;
+  const big = state.photoBig || state.photoCanvas;
+  const k = Math.min(1, 1024 / Math.max(big.width, big.height));
+  const W = Math.round(big.width * k); const H = Math.round(big.height * k);
+  const render = fitter.shaded({ width: W, height: H }, cut, state.fitResult);
+  let x0 = cut.w; let y0 = cut.h; let x1 = -1; let y1 = -1;
+  for (let y = 0; y < cut.h; y++) {
+    for (let x = 0; x < cut.w; x++) {
+      if (cut.mask[y * cut.w + x] !== 1) continue;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  const sx = W / cut.w; const sy = H / cut.h;
+  const mx = (x1 - x0 + 1) * sx * 0.12; const my = (y1 - y0 + 1) * sy * 0.12;
+  const bx = Math.max(0, x0 * sx - mx); const by = Math.max(0, y0 * sy - my);
+  const bw = Math.min(W, (x1 + 1) * sx + mx) - bx; const bh = Math.min(H, (y1 + 1) * sy + my) - by;
+  const crop = (src, sw, sh) => {
+    const c = document.createElement('canvas');
+    const s = Math.min(1, 768 / Math.max(bw, bh));
+    c.width = Math.max(8, Math.round(bw * s)); c.height = Math.max(8, Math.round(bh * s));
+    const f = sw / W;
+    c.getContext('2d').drawImage(src, bx * f, by * (sh / H), bw * f, bh * (sh / H), 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.88);
+  };
+  return { photo: crop(big, big.width, big.height), render: crop(render, W, H) };
+}
+function undoJudge(done, tried) {
+  const vals = state.vals[state.type] = state.vals[state.type] || {};
+  for (const c of done) {
+    vals[c.key] = c.from;
+    (tried[c.key] = tried[c.key] || []).push(c.value); // the judge's value did not help: not offered again
+  }
+}
+// The overlap of the piece as it stands now (after the fabric settled) with the photo: a local polish of the current
+// fit, proportions kept. Before and after a round are measured this same way, so physics or a fresh search cannot pass
+// for an effect of the change (2026-11-20: the fit's own figure was taken before the fabric settled).
+async function measureNow() {
+  await waitFor(() => !fitting && !physics.busy && !simFor, 180000);
+  await sleepMs(300);
+  if (!state.fitResult || !fitter || !state.items.length) return null;
+  fitter.setModel(state.items);
+  const r = fitter.fit(state.cut, { limits: { sy: [1, 1], sz: [1, 1] }, locked: { sy: true, sz: true }, start: { ...state.fitResult, sy: 1, sz: 1 } });
+  return r ? r.iou : null;
+}
+// builds what changed, matches it to the photo again and lets the fabric settle; -> measureNow()
+async function refitNow(alive) {
+  const before = state.fitResult;
+  renderForm();
+  state.wantFit = true;
+  scheduleBuild();
+  await waitFor(() => !fitting && state.fitResult !== before, 180000);
+  if (!alive()) return null;
+  return measureNow();
+}
+function applyJudge(j, tried) {
+  const type = state.type;
+  const vals = state.vals[type] = state.vals[type] || {};
+  const mine = state.userSet[type] || {};
+  const cur = optionsFor(type, vals);
+  const done = [];
+  for (const c of j.changes) {
+    if (mine[c.key] || cur[c.key] === c.value || (tried[c.key] || []).includes(c.value)) continue;
+    (tried[c.key] = tried[c.key] || []).push(cur[c.key]); // the value it had is now ruled out
+    done.push({ ...c, from: cur[c.key] });
+    vals[c.key] = c.value;
+    (state.fromPhoto[type] = state.fromPhoto[type] || {})[c.key] = true;
+  }
+  return done;
+}
+async function judgeModel({ rounds = 2 } = {}) {
+  if (judging) return;
+  if (!hasKey()) { status('judge', () => t('seeAINoToken'), true); return; }
+  if (!state.fitResult || !state.cut || !state.cut.mask || state.type === 'ai' || !fitter) { status('judge', () => t('judgeNeedFit'), true); return; }
+  judging = true;
+  const run = ++judgeRun;
+  const photo = photoJob;
+  $('#judge').disabled = true;
+  const tried = {};
+  const log = [];
+  state.judge = { photo, log, model: '' };
+  paintJudge();
+  const alive = () => run === judgeRun && photo === photoJob;
+  try {
+    for (let r = 1; r <= rounds; r++) {
+      // the comparison waits for the fit and the fabric: the render must show the piece as it now stands
+      if (fitting || physics.busy || simFor) status('judge', () => t('judgeWaiting'));
+      await waitFor(() => !fitting && !physics.busy && !simFor, 180000);
+      await sleepMs(300);
+      if (!alive()) return;
+      status('judge', () => fill(t('judgeWorking'), { r: nf(r) }));
+      const type = state.type;
+      const pics = judgePictures();
+      const cur = optionsFor(type, state.vals[type] || {});
+      const prompt = judgePrompt(type, OPTIONS, cur, (k) => TYPE_T[k][1], (k) => (OPT_T[k] ? OPT_T[k].en : k), optEn, tried);
+      const ans = await askVision(judgeBody(prompt, pics.photo, pics.render, judgeSchema(type, OPTIONS)));
+      if (!alive()) return;
+      const j = parseJudge(ans.text, type, OPTIONS);
+      if (!j) throw new Error(t('seeAIUnreadable'));
+      const iouBefore = (await measureNow()) || 0;
+      if (!alive()) return;
+      const done = applyJudge(j, tried);
+      const entry = { round: r, score: j.score, diff: j.diff, done, before: iouBefore };
+      log.push(entry);
+      state.judge.model = ans.model;
+      paintJudge();
+      if (!done.length) break;
+      // the outline decides whether the round's changes stay
+      status('judge', () => fill(t('judgeRefit'), { r: nf(r) }));
+      const after = await refitNow(alive);
+      if (!alive()) return;
+      entry.after = after;
+      if (after != null && after < iouBefore - JUDGE_SLACK) {
+        entry.undone = true;
+        undoJudge(done, tried);
+        paintJudge();
+        status('judge', () => fill(t('judgeUndoing'), { r: nf(r) }));
+        await refitNow(alive);
+        if (!alive()) return;
+        break;
+      }
+      paintJudge();
+      if (j.score >= 9) break;
+    }
+    const kept = log.filter((l) => !l.undone).reduce((n, l) => n + l.done.length, 0);
+    const last = log[log.length - 1];
+    status('judge', () => fill(t('judgeDone'), { s: nf(last.score), c: kept ? fill(t('judgeChanged'), { n: nf(kept) }) : t('judgeNoChange') }));
+  } catch (e) {
+    if (alive() && e.name !== 'AbortError') {
+      const why = e.kind === 'key' ? t('seeAIBadKey') : e.kind === 'quota' ? t('seeAIQuota') : e.kind === 'net' ? t('seeAINet') : String(e.message).slice(0, 160);
+      status('judge', () => fill(t('judgeFail'), { e: why }), true);
+    }
+  } finally {
+    if (run === judgeRun) { judging = false; $('#judge').disabled = false; }
+  }
+}
+// once per photo, after the first fit that already has the AI's reading of the details
+function maybeAutoJudge() {
+  if (judging || !seeOn() || !hasKey() || state.type === 'ai') return;
+  if (!state.aiSeen || state.aiSeen.photo !== photoJob || state.judgedFor === photoJob) return;
+  state.judgedFor = photoJob;
+  setTimeout(() => judgeModel(), 50);
+}
+function stopJudge() {
+  judgeRun++;
+  judging = false;
+  $('#judge').disabled = false;
+  for (const p of seePending.values()) p.reject(Object.assign(new Error('stopped'), { name: 'AbortError' }));
+  seePending.clear();
+  if (window.sketchup && window.sketchup.aim3d_see_cancel) window.sketchup.aim3d_see_cancel('judge');
+}
+function paintJudge() {
+  const ul = $('#judgeList');
+  const j = state.judge;
+  ul.textContent = '';
+  ul.hidden = !j || j.photo !== photoJob || !j.log.length;
+  if (ul.hidden) return;
+  const ar = lang === 'ar';
+  for (const l of j.log) {
+    const li = document.createElement('li');
+    const b = document.createElement('b');
+    b.textContent = fill(t('judgeRound'), { r: nf(l.round), s: nf(l.score) });
+    li.appendChild(b);
+    const arrow = ar ? '←' : '→'; // from the old value to the new one, in the reading direction
+    const parts = l.done.map((c) => `${optLabel(c.key)}: ${/^\d+$/.test(c.from) ? nf(Number(c.from)) : valLabel(c.key, c.from)} ${arrow} ${/^\d+$/.test(c.value) ? nf(Number(c.value)) : valLabel(c.key, c.value)}${ar && c.reason ? ` (${c.reason})` : ''}`);
+    li.appendChild(document.createTextNode(` — ${parts.length ? parts.join('؛ ') : t('judgeNoChange')}`));
+    if (l.after != null && l.done.length) {
+      const d = document.createElement('div');
+      d.className = l.undone ? 'hint bad' : 'hint';
+      d.textContent = fill(t(l.undone ? 'judgeUndone' : 'judgeKept'), { a: nf(Math.round(l.before * 1000) / 10), b: nf(Math.round(l.after * 1000) / 10) });
+      li.appendChild(d);
+    }
+    if (ar && l.diff) { const d = document.createElement('div'); d.className = 'hint'; d.textContent = fill(t('judgeLeft'), { d: l.diff }); li.appendChild(d); }
+    ul.appendChild(li);
   }
 }
 
@@ -1205,6 +1662,16 @@ function start() {
   bimg.addEventListener('pointermove', (e) => { if (boxDrag && e.buttons) { boxDrag.b = boxPoint(e); drawBox(); } });
   bimg.addEventListener('pointerup', (e) => { if (boxDrag) { boxDrag.b = boxPoint(e); drawBox(); } });
   $('#aiMake').addEventListener('click', makeAI);
+  $('#aiBest').addEventListener('click', bestOf);
+  $('#judge').addEventListener('click', () => judgeModel());
+  for (const slot of document.querySelectorAll('.slot')) {
+    const input = slot.querySelector('input');
+    input.addEventListener('change', () => { if (input.files[0]) setView(slot.dataset.side, input.files[0]); input.value = ''; });
+  }
+  $('#videoPick').addEventListener('click', () => $('#videoFile').click());
+  $('#videoFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; takeVideo(f); });
+  $('#swapLR').addEventListener('click', () => { const l = state.views.left; const r = state.views.right; setView('left', r); setView('right', l); });
+  $('#clearViews').addEventListener('click', () => { for (const side of ['back', 'left', 'right']) setView(side, null); });
   $('#aiCancel').addEventListener('click', cancelAI);
   // the Hugging Face token: kept by the extension inside SketchUp, else in this browser; it goes only to Hugging Face
   $('#tokenRow').hidden = false;
@@ -1275,7 +1742,7 @@ function start() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
-  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize }; // for the tests
+  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize, setView, makeAI, bestOf, framesFromVideo, judgeModel, judgePictures, measureNow }; // for the tests
 }
 
 start();

@@ -10,6 +10,9 @@ export const SPACES = [
   { id: 'triposg', name: 'TripoSG', space: 'vast-ai-triposg', interface: { start_session: 0, run_segmentation: 1, image_to_3d: 6 } },
   { id: 'trellis2', name: 'TRELLIS.2', space: 'microsoft-trellis-2',
     interface: { start_session: 0, preprocess_image: 1, image_to_3d: 15, extract_glb: 2 } },
+  // Hunyuan3D 2 fine-tuned for up to four views (front, back, left, right; only the front is required). Used only
+  // when the user gave more photos of the piece; then it goes first and the one-photo engines follow it.
+  { id: 'hunyuan2mv', name: 'Hunyuan3D 2mv', space: 'tencent-hunyuan3d-2mv', views: true, interface: { shape_generation: 13, on_export_click: 6 } },
 ];
 export const FACES = { light: 20000, fast: 30000, standard: 60000, high: 120000 };
 const MAX_GLB = 200 * 1024 * 1024;
@@ -34,6 +37,15 @@ const FLOWS = {
     return pick(c, exp, 1);
   },
   hunyuan2(c, img, o, say) { return FLOWS.hunyuan(c, [null, img, null, null, null, null, o.steps, 5.0, 1234, o.octree, o.rembg, 8000, false], o.faces, say); },
+  async hunyuan2mv(c, img, o, say) {
+    const up = {};
+    for (const side of ['back', 'left', 'right']) {
+      if (!o.views[side]) continue;
+      say('upload');
+      up[side] = await c.upload(o.views[side], `${side}.${o.views[side].type === 'image/png' ? 'png' : 'jpg'}`);
+    }
+    return FLOWS.hunyuan(c, [null, null, img, up.back || null, up.left || null, up.right || null, o.steps, 5.0, 1234, o.octree, o.rembg, 8000, false], o.faces, say);
+  },
   hunyuan21(c, img, o, say) { return FLOWS.hunyuan(c, [img, null, null, null, null, o.steps, 5.0, 1234, o.octree, o.rembg, 8000, false], o.faces, say); },
   async triposg(c, img, o, say) {
     await c.call('start_session', []);
@@ -61,18 +73,29 @@ function pick(c, data, prefer) {
 }
 
 // image: a Blob (a PNG cut-out on a transparent background skips the Space's own background removal).
-// onStatus(stepKey, engineName). Resolves { glb: ArrayBuffer, engine, tried } or rejects with an Error carrying
-// .tried and .quota.
-export async function makeModel({ image, token = '', quality = 'light', faces, engine = '', steps = 20, octree = 256,
-  onStatus = () => {}, signal, fetchFn } = {}) {
-  const queue = SPACES.slice();
+// views: { back, left, right } Blobs, any of them (more photos of the same piece): the multi-view engine goes first.
+// engine: the one to try first; only: that one and no other. onStatus(stepKey, engineName).
+// Resolves { glb: ArrayBuffer, engine, id, tried } or rejects with an Error carrying .tried, .quota and .token.
+export function engineQueue({ engine = '', only = false, views = null } = {}) {
+  const many = !!(views && (views.back || views.left || views.right));
+  let queue = SPACES.filter((s) => !s.views || many);
+  if (many) queue.sort((a, b) => (b.views ? 1 : 0) - (a.views ? 1 : 0));
   const first = queue.findIndex((s) => s.id === engine);
+  if (only) return first >= 0 ? [queue[first]] : [];
   if (first > 0) queue.unshift(queue.splice(first, 1)[0]);
+  return queue;
+}
+export async function makeModel({ image, views = null, token = '', quality = 'light', faces, engine = '', only = false, steps = 20,
+  octree = 256, onStatus = () => {}, signal, fetchFn } = {}) {
+  const queue = engineQueue({ engine, only, views });
+  const v = views || {};
   const o = {
     faces: faces >= 5000 && faces <= 300000 ? faces : (FACES[quality] || FACES.light),
     steps: steps >= 5 && steps <= 50 ? steps : 20,
     octree: octree >= 64 && octree <= 512 ? octree : 256,
-    rembg: image.type !== 'image/png',
+    // the Space removes backgrounds unless every photo it gets is already a cut-out
+    rembg: image.type !== 'image/png' || ['back', 'left', 'right'].some((k) => v[k] && v[k].type !== 'image/png'),
+    views: v,
   };
   const name = image.type === 'image/png' ? 'photo.png' : 'photo.jpg';
   const tried = [];
@@ -89,7 +112,7 @@ export async function makeModel({ image, token = '', quality = 'light', faces, e
       say('download');
       const glb = await c.download(file);
       if (!isGLB(glb)) throw new GradioError('the file that came back is not a 3D model (GLB)');
-      return { glb, engine: s.name, tried };
+      return { glb, engine: s.name, id: s.id, tried };
     } catch (e) {
       if (signal && signal.aborted) throw e;
       tried.push({ engine: s.name, error: String(e.message).slice(0, 200), kind: e.kind || 'space' });

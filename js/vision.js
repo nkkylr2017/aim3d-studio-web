@@ -172,6 +172,78 @@ export async function askGemini(key, body, { models = GEMINI_MODELS, signal, fet
   throw err;
 }
 
+// ---- the judge: the photo next to a grey render of the model from the same camera (render and compare). Asked with
+// both pictures and the model's current options; only options the photo clearly contradicts are to be changed
+// (a judge asked without a reference rewards a clean but wrong model; small edits keep the loop from swinging).
+export function judgePrompt(type, options, current, typeName, optName, en, tried = {}) {
+  const lines = [
+    `Image 1 is a photo of a real ${typeName(type)}. Image 2 is a 3D model of it, rendered in plain grey from the same camera.`,
+    'The model is built from the options below; each line gives the current value and the possible values (value = what it looks like).',
+  ];
+  for (const [k, vals] of Object.entries(options[type])) {
+    lines.push(`  ${k} (${optName(k)}): now ${current[k]}; possible: ${vals.map((v) => (/^\d+$/.test(v) ? v : `${v} = ${en(k, v)}`)).join(' | ')}`);
+  }
+  const no = Object.entries(tried).filter(([, vs]) => vs.length).map(([k, vs]) => `${k}: ${vs.join(', ')}`);
+  if (no.length) lines.push(`Already tried and rejected, do not suggest again: ${no.join('; ')}.`);
+  lines.push(
+    'Compare the model with the photo. List in "changes" only the options whose current value is clearly wrong, each with the',
+    'value that matches the photo. Leave out anything the photo does not show clearly, and colour or material (the model is',
+    'grey on purpose). Ignore the background, the floor and the lighting. Left and right are as seen standing in front of the piece.',
+    'Rate how close the model\'s shape is to the photo from 0 to 10, and name the biggest difference that remains, in Arabic.',
+  );
+  return lines.join('\n');
+}
+
+export function judgeSchema(type, options) {
+  const keys = Object.keys(options[type]);
+  const values = [...new Set(Object.values(options[type]).flat())];
+  return {
+    type: 'object',
+    required: ['score', 'changes', 'biggest_difference_ar'],
+    properties: {
+      score: { type: 'integer', description: '0 = nothing alike, 10 = the same shape' },
+      changes: {
+        type: 'array',
+        items: {
+          type: 'object', required: ['key', 'value', 'reason_ar'],
+          properties: { key: { type: 'string', enum: keys }, value: { type: 'string', enum: values }, reason_ar: { type: 'string' } },
+        },
+      },
+      biggest_difference_ar: { type: 'string' },
+    },
+  };
+}
+
+// photo and render: data URLs; the body asks with both pictures (photo first, as the prompt says)
+export function judgeBody(prompt, photoUrl, renderUrl, schema) {
+  const part = (u) => {
+    const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/s.exec(String(u));
+    if (!m) throw new Error('a picture is not a JPEG, PNG or WebP data URL');
+    return { inline_data: { mime_type: m[1], data: m[2] } };
+  };
+  return {
+    contents: [{ role: 'user', parts: [{ text: 'Image 1 (the photo):' }, part(photoUrl), { text: 'Image 2 (the model):' }, part(renderUrl), { text: prompt }] }],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json', responseJsonSchema: schema, maxOutputTokens: 4096 },
+  };
+}
+
+// -> { score, changes: [{ key, value, reason }], diff } with only valid keys and values of this type, or null
+export function parseJudge(text, type, options) {
+  const s = String(text);
+  const a = s.indexOf('{');
+  const b = s.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  let j;
+  try { j = JSON.parse(s.slice(a, b + 1)); } catch (e) { return null; }
+  const opts = options[type] || {};
+  const seen = new Set();
+  const changes = (Array.isArray(j.changes) ? j.changes : []).map((c) => ({
+    key: String(c && c.key || ''), value: String(c && c.value || '').toLowerCase(), reason: String(c && c.reason_ar || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+  })).filter((c) => opts[c.key] && opts[c.key].includes(c.value) && !seen.has(c.key) && seen.add(c.key));
+  const score = Math.max(0, Math.min(10, Math.round(Number(j.score) || 0)));
+  return { score, changes, diff: String(j.biggest_difference_ar || '').replace(/\s+/g, ' ').trim().slice(0, 240) };
+}
+
 function abortError() {
   const e = new Error('stopped');
   e.name = 'AbortError';

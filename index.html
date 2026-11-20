@@ -102,6 +102,26 @@
   .analysis li { margin: 2px 0; line-height: 1.5; }
   .analysis .an-issues li { color: var(--bad, #b3261e); }
   .analysis .an-by { margin: 6px 0 0; font-size: 11.5px; opacity: .65; }
+  .row.wrap { flex-wrap: wrap; }
+  .views { margin: 10px 0; }
+  .views .name { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+  .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .slot { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 64px;
+    border: 1px dashed var(--rule); border-radius: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; overflow: hidden; text-align: center; padding: 4px; }
+  .slot.has { border-style: solid; }
+  .slot img { width: 100%; height: 56px; object-fit: contain; }
+  .slot img[hidden] { display: none; }
+  .cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 10px; }
+  .cands[hidden] { display: none; }
+  .cand { border: 1px solid var(--rule); border-radius: 8px; padding: 6px; font-size: 12.5px; }
+  .cand.on { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+  .cand img { width: 100%; border-radius: 4px; display: block; }
+  .cand p { margin: 6px 0 2px; }
+  .cand p.bad { color: var(--bad); }
+  .judge-list { margin: 6px 0; padding-inline-start: 18px; font-size: 13px; }
+  .judge-list[hidden] { display: none; }
+  .judge-list li { margin: 4px 0; line-height: 1.5; }
+  .judge-list .hint { margin-top: 2px; }
   .choice-set legend { font-size: 13.5px; font-weight: 600; color: var(--muted); padding: 0; margin: 0 0 10px; }
   .link { background: none; border: 0; color: var(--accent); font: inherit; font-size: 13px; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 
@@ -214,8 +234,24 @@
 
     <section id="aiBox" hidden>
       <p class="hint" data-t="aiNote"></p>
-      <div class="row"><button class="btn primary" id="aiMake" type="button" data-t="aiMake"></button><button class="btn" id="aiCancel" type="button" data-t="aiCancel" hidden></button></div>
+      <div class="views" id="viewsBox">
+        <p class="name" data-t="viewsTitle"></p>
+        <div class="slots">
+          <label class="slot" data-side="back"><img alt="" hidden><span data-t="vBack"></span><input type="file" accept="image/*" hidden></label>
+          <label class="slot" data-side="left"><img alt="" hidden><span data-t="vLeft"></span><input type="file" accept="image/*" hidden></label>
+          <label class="slot" data-side="right"><img alt="" hidden><span data-t="vRight"></span><input type="file" accept="image/*" hidden></label>
+        </div>
+        <div class="row wrap">
+          <button class="link" id="videoPick" type="button" data-t="videoPick"></button><input type="file" id="videoFile" accept="video/*" hidden>
+          <button class="link" id="swapLR" type="button" data-t="swapLR" hidden></button>
+          <button class="link" id="clearViews" type="button" data-t="clearViews" hidden></button>
+        </div>
+        <p class="hint" data-t="viewsHint"></p>
+      </div>
+      <div class="row wrap"><button class="btn primary" id="aiMake" type="button" data-t="aiMake"></button><button class="btn" id="aiBest" type="button" data-t="aiBest"></button><button class="btn" id="aiCancel" type="button" data-t="aiCancel" hidden></button></div>
+      <p class="hint" data-t="aiBestHint"></p>
       <p class="note" id="aiState" aria-live="polite"></p>
+      <div class="cands" id="aiResults" hidden></div>
       <div class="field" id="tokenRow" hidden>
         <label class="name" for="token" data-t="token"></label>
         <div class="row"><input type="password" id="token" autocomplete="off" dir="ltr"><button class="btn" id="tokenSave" type="button" data-t="tokenSave"></button></div>
@@ -233,6 +269,9 @@
       <p class="note bad" id="senseNote" hidden></p>
       <button class="link" id="refit" type="button" data-t="refit"></button>
       <button class="link" id="exactAI" type="button" data-t="exactAI" hidden></button>
+      <button class="link" id="judge" type="button" data-t="judge" hidden></button>
+      <p class="note" id="judgeState" aria-live="polite"></p>
+      <ul class="judge-list" id="judgeList" hidden></ul>
     </section>
 
     <section>

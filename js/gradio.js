@@ -113,50 +113,80 @@ export class Gradio {
     return this.waitFor(eventId, apiName);
   }
 
+  // Reads the session's event stream until this event's result. A stream the network dropped is opened again (up to
+  // twice): the Space keeps the job and goes on reporting on the session. A stream the Space closed itself is an end.
   async waitFor(eventId, apiName) {
     const stop = new AbortController();
     const onAbort = () => stop.abort();
     if (this.signal) this.signal.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => stop.abort(), QUEUE_TIMEOUT);
-    let res;
+    let drops = 0;
+    let lastDrop = '';
     try {
-      res = await this.fetch(`${this.base}${this.prefix}/queue/data?session_hash=${this.session}`,
-        { headers: this.headers({ Accept: 'text/event-stream' }), signal: stop.signal });
-      if (!res.ok) throw new GradioError(`Space stream failed (HTTP ${res.status})`);
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
       for (;;) {
-        const { value, done } = await reader.read();
-        if (value) buf += dec.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line.startsWith('data:')) continue;
-          let m;
-          try { m = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
-          if (eventId && m.event_id && m.event_id !== eventId) continue;
-          if (m.msg === 'unexpected_error') throw new GradioError(String(m.message || 'the Space reported an error'), quotaLike(m.message) ? 'quota' : 'space');
-          if (m.msg === 'process_completed') {
-            reader.cancel().catch(() => {});
-            if (!m.success) {
-              const msg = String((m.output && m.output.error) || m.title || 'the Space reported an error');
-              throw new GradioError(quotaLike(msg) ? `Free GPU quota used up for now: ${msg.slice(0, 160)}` : msg.slice(0, 300), quotaLike(msg) ? 'quota' : 'space');
-            }
-            return (m.output && m.output.data) || [];
-          }
+        let res = null;
+        try {
+          res = await this.fetch(`${this.base}${this.prefix}/queue/data?session_hash=${this.session}`,
+            { headers: this.headers({ Accept: 'text/event-stream' }), signal: stop.signal });
+        } catch (e) {
+          if (stop.signal.aborted) throw e;
+          lastDrop = `${e.name}: ${e.message}`;
         }
-        if (done) throw new GradioError(`${apiName}: the Space closed the connection without a result.`);
+        if (res) {
+          if (!res.ok) throw new GradioError(`Space stream failed (HTTP ${res.status})`);
+          const got = await this.readStream(res, eventId, apiName, stop.signal);
+          if (got.data) return got.data;
+          if (got.closed) throw new GradioError(`${apiName}: the Space closed the connection without a result.`);
+          lastDrop = got.dropped;
+        }
+        if (++drops > 2) throw new GradioError(`The connection to the Space was lost while waiting (${lastDrop}).`, 'net');
+        await new Promise((r) => setTimeout(r, 1500));
       }
     } catch (e) {
       if (this.signal && this.signal.aborted) throw e;
       if (e instanceof GradioError) throw e;
       if (stop.signal.aborted) throw new GradioError(`${apiName}: timed out after ${QUEUE_TIMEOUT / 60000} min in the Space's queue. The job was not sent again.`);
-      throw new GradioError('The connection to the Space was lost while waiting (no internet connection?).', 'net');
+      throw new GradioError(`The connection to the Space was lost while waiting (${e.name}: ${e.message}).`, 'net');
     } finally {
       clearTimeout(timer);
       if (this.signal) this.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  // -> { data } (this event's result), { closed: true } (the Space ended the stream) or { dropped: why } (the network)
+  async readStream(res, eventId, apiName, signal) {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        if (signal.aborted) throw e;
+        return { dropped: `${e.name}: ${e.message}` };
+      }
+      if (chunk.value) buf += dec.decode(chunk.value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        let m;
+        try { m = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+        if (m.msg === 'close_stream') { reader.cancel().catch(() => {}); return { closed: true }; }
+        if (eventId && m.event_id && m.event_id !== eventId) continue;
+        if (m.msg === 'unexpected_error') throw new GradioError(String(m.message || 'the Space reported an error'), quotaLike(m.message) ? 'quota' : 'space');
+        if (m.msg === 'process_completed') {
+          reader.cancel().catch(() => {});
+          if (!m.success) {
+            const msg = String((m.output && m.output.error) || m.title || 'the Space reported an error');
+            throw new GradioError(quotaLike(msg) ? `Free GPU quota used up for now: ${msg.slice(0, 160)}` : msg.slice(0, 300), quotaLike(msg) ? 'quota' : 'space');
+          }
+          return { data: (m.output && m.output.data) || [] };
+        }
+      }
+      if (chunk.done) return { closed: true };
     }
   }
 

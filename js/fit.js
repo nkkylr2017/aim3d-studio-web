@@ -442,6 +442,33 @@ export class Fitter {
     return out;
   }
 
+  // The model in plain grey with soft light, seen by the fitted camera, framed like the photo (a canvas the size of
+  // the photo canvas): what a vision model compares with the photo. Lights are added for this picture only.
+  shaded(photoCanvas, cut, p) {
+    const W = photoCanvas.width; const H = photoCanvas.height;
+    const pose = p.pose || this.aligned(p, toGrid(cut), 2).q;
+    const mat = new THREE.MeshLambertMaterial({ color: 0xd8d8d8, side: THREE.DoubleSide });
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.6);
+    const key = new THREE.DirectionalLight(0xffffff, 1.9);
+    const bg = this.scene.background;
+    this.pose(pose, W / H);
+    key.position.copy(this.camera.position).add(new THREE.Vector3(0.6, 1.4, 0.3)); // from above, a little to the side
+    this.scene.add(hemi, key);
+    this.scene.background = new THREE.Color(0xf2f2f2);
+    const buf = this.render(pose, W, H, mat);
+    this.scene.remove(hemi, key);
+    this.scene.background = bg;
+    mat.dispose();
+    const out = document.createElement('canvas');
+    out.width = W; out.height = H;
+    const ctx = out.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) img.data.set(buf.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4); // GL rows run bottom up
+    for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255;
+    ctx.putImageData(img, 0, 0);
+    return out;
+  }
+
   // The photo with the fitted outline drawn over it (a canvas the size of the photo canvas).
   compare(photoCanvas, cut, p) {
     const W = photoCanvas.width; const H = photoCanvas.height;
