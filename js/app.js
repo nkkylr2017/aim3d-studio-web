@@ -2,8 +2,14 @@
 // same cloth physics -> GLB / DAE for SketchUp. Everything runs in this browser; the photo never leaves it.
 import { TYPES, OPTIONS, RANGES, optionsFor, plannedSize, palette, roleColour, seedFor } from './furniture.js';
 import { Viewer } from './viewer.js';
+import { Doc, History } from './scene.js';
+import { Editor } from './editor.js';
 import { Fitter, plainCutout, clean } from './fit.js';
-import { readGLB, toPart, sized } from './ai.js';
+import { readGLB, toPart, sized, cleaned } from './ai.js';
+import { splitPieces } from './meshops.js';
+import { profileFromMask, revolve } from './profile.js';
+import { toProject, fromProject } from './project.js';
+import { partGeometry as kitGeometry } from './mesh.js';
 import { toGLB, toDAE, download } from './export.js';
 import { crc32 } from './rng.js';
 import { makeModel, engineQueue } from './engines.js';
@@ -46,9 +52,9 @@ const OPT_T = {
 };
 const UI = {
   title: ['استوديو AIM للمجسمات', 'AIM 3D Studio'],
-  sub: ['صورة قطعة أثاث ← مجسم أبيض جاهز لسكتشب', 'A furniture photo → a white model ready for SketchUp'],
+  sub: ['أي صورة ← مجسم 3D أبيض تعدّل فيه كل شي وتسحبه لسكتش اب', 'Any photo → a white 3D model you can edit and drag into SketchUp'],
   photo: ['الصورة', 'Photo'],
-  drop: ['اسحب صورة القطعة هنا أو اضغط لاختيارها', 'Drop a photo of the piece here, or click to choose one'],
+  drop: ['اسحب أي صورة هنا أو اضغط لاختيارها', 'Drop any photo here, or click to choose one'],
   dropHint: ['JPG أو PNG أو WebP. الصورة تبقى على جهازك.', 'JPG, PNG or WebP. The photo stays on this computer.'],
   change: ['صورة أخرى', 'Another photo'],
   type: ['نوع القطعة', 'Piece'],
@@ -74,6 +80,81 @@ const UI = {
   aiStep_gpu: ['{e}: يصنع الشكل (وقت GPU مجاني، عادة 1 إلى 3 دقائق)…', '{e}: making the shape (free GPU, usually 1–3 min)…'],
   aiStep_reduce: ['{e}: أخفّف المجسم…', '{e}: reducing the mesh…'], aiStep_export: ['{e}: أصدّر الملف…', '{e}: exporting…'],
   aiStep_download: ['{e}: أنزّل المجسم…', '{e}: downloading the model…'],
+  editTitle: ['الأجزاء والتعديل', 'Parts and editing'],
+  editHint: ['اضغط جزء في المجسم أو في القائمة. حرّكه أو دوّره أو كبّره بالأسهم، أو اكتب الأرقام. Shift لأكثر من جزء.', 'Click a part in the model or the list. Move, turn or scale it with the handles, or type numbers. Shift for more than one part.'],
+  editNote: ['عدّلت أجزاء بيدك: تغيير الخيارات فوق يبني القطعة من جديد ويمسح تعديلاتك (تراجع يرجّعها).', 'You edited parts by hand: changing the options above rebuilds the piece and drops your edits (undo brings them back).'],
+  editLost: ['انبنت القطعة من جديد ومسحت تعديلاتك اليدوية. تراجع (Ctrl+Z) يرجّعها.', 'The piece was rebuilt and your hand edits were dropped. Undo (Ctrl+Z) brings them back.'],
+  editMany: ['{n} أجزاء مختارة', '{n} parts selected'],
+  tMove: ['تحريك', 'Move'], tTurn: ['تدوير', 'Turn'], tScale: ['تكبير', 'Scale'], tUndo: ['تراجع', 'Undo'], tRedo: ['إعادة', 'Redo'],
+  pPos: ['المكان (سم)', 'Position (cm)'], pSize: ['المقاس (سم)', 'Size (cm)'], pTurn: ['الدوران (°)', 'Turn (°)'], pRatio: ['حافظ على النسب', 'Keep proportions'],
+  pDup: ['تكرار', 'Duplicate'], pMirror: ['مرآة', 'Mirror'], pHide: ['إخفاء', 'Hide'], pShow: ['إظهار', 'Show'], pDel: ['حذف', 'Delete'],
+  shapeTools: ['أدوات الشكل', 'Shape tools'],
+  aiPiece: ['قطعة', 'Piece'], aiObject: ['المجسم', 'Object'],
+  aiLite: ['مسودة محلية الحين (بدون وقت GPU)', 'Local draft now (no GPU time)'],
+  aiProfile: ['شكل دائري (فازة، أصيص، أباجورة) من محيطه', 'Round object (vase, pot, shade) from its outline'],
+  prTitle: ['المحيط (الشكل الدائري)', 'Profile (round shape)'], prHint: ['اسحب النقاط البرتقالية. دبل كلك على نقطة يشيلها، وعلى الخط يضيف نقطة.', 'Drag the orange points. Double-click a point to remove it, the outline to add one.'],
+  prH: ['الارتفاع', 'Height'], prD: ['أعرض قطر', 'Widest'], prWall: ['سماكة الجدار', 'Wall'], prHollow: ['مجوّف (فتحة من فوق)', 'Hollow (open at the top)'],
+  profileName: ['الشكل الدائري', 'Profile'], profilePart: ['الجسم', 'Body'],
+  profileAuto: ['الشكل متناظر ({s}٪)، فبنيته بلفّ محيطه على محوره: دقيق للأشكال الدائرية، وتعدّل المحيط من «المحيط» تحت.', 'The object is symmetric ({s}%), so it was built by revolving its outline: exact for round objects; edit the outline under "Profile".'],
+  profileDone: ['بنيت الشكل بلفّ محيطه ({n} نقاط، تناظر {s}٪).', 'Built by revolving its outline ({n} points, symmetry {s}%).'],
+  profileNo: ['ما أقدر أبنيه بلفّ محيطه: {why} (تناظر {s}٪).', 'Cannot build it by revolving its outline: {why} ({s}% symmetry).'],
+  profileWarn: ['انتبه: {why}، راجع المحيط.', 'Check: {why}; review the profile.'],
+  why_symmetry: ['الشكل مو متناظر', 'the outline is not symmetric'], why_axis: ['منتصفه مو على خط واحد', 'its middle does not line up'],
+  why_tilt: ['الصورة مايلة', 'the photo is tilted'], why_cropped: ['الصورة قاصة جزء منه', 'the photo cuts part of it off'],
+  why_gaps: ['أجزاء منه مخفية', 'parts of it are hidden'], why_one_side: ['فيه شيء بارز من جهة (مقبض؟): المجسم هو الجسم الدائري بدون هذا الجزء', 'something sticks out on one side (a handle?): the model is the round body without it'],
+  why_low_res: ['الصورة صغيرة عليه', 'it is too small in the photo'], listSep: ['، ', ', '],
+  pairTitle: ['القطع المتناظرة (يمين ويسار)', 'Mirror pairs (left and right)'],
+  pairFind: ['اربط {n} أزواج متناظرة', 'Link {n} mirror pairs'], pairNone: ['ما فيه أزواج متناظرة جديدة', 'No new mirror pairs'],
+  pairCount: ['مربوط: {n}', 'Linked: {n}'], pairsLinked: ['ربطت {n} أزواج: تعديل وحدة يعدل توأمها بالمعكوس.', 'Linked {n} pairs: editing one edits its twin, mirrored.'],
+  pairLink: ['عدّل التوأم معه (معكوس)', 'Edit the twin with it (mirrored)'], pairOf: ['توأمها: {n}', 'Its twin: {n}'],
+  pairUnlink: ['فك الربط', 'Unlink'], snapDist: ['الالتصاق (سم، 0 = بدون)', 'Snap (cm, 0 = off)'],
+  snapHint: ['يلصق صناديق القطع ببعض (مو السطوح المنحنية). اضغط Alt وأنت تسحب عشان تتحرك بحرية.', 'Snaps the parts\' boxes together (not curved surfaces). Hold Alt while dragging to move freely.'],
+  prTop: ['قطر الفوهة/الأعلى', 'Top (mouth)'], prBase: ['قطر القاعدة', 'Base'], prSeg: ['الأضلاع', 'Segments'],
+  prReset: ['رجّع المحيط كما قُرئ من الصورة', 'Reset to the profile read from the photo'],
+  prLocked: ['النقطة مقفلة (Shift + ضغطة تفكها).', 'The point is locked (Shift+click unlocks it).'],
+  prSwapAbove: ['جرّب تقدير صورة مأخوذة من فوق (≈{d}°)', 'Try an elevated-view estimate (≈{d}°)'],
+  prSwapSide: ['رجّعها صورة من الجنب', 'Back to a side view'],
+  prAbove: ['تقدير لصورة مأخوذة من فوق بزاوية {d}° تقريباً (من شكل الحافة): الارتفاع تقريبي، راجعه.', 'Elevated-view estimate, about {d}° from above (from the rim): the height is approximate, check it.'],
+  prSide: ['يفترض أن الصورة مأخوذة من الجنب، مو من فوق.', 'Assumes the photo was taken from the side, not from above.'],
+  kind_param: ['بالقواعد', 'by rules'], kind_ai: ['مجسم ذكاء اصطناعي', 'AI mesh'], kind_lite: ['مسودة تقريبية', 'rough draft'],
+  kind_profile: ['محيط ملفوف', 'revolved profile'],
+  provGeometry: ['الشكل: {v}', 'Shape: {v}'], provSize: ['المقاس: {v}', 'Size: {v}'], provProduct: ['القطعة: {v}', 'Product: {v}'],
+  provCamera: ['يفترض صورة من الجنب', 'assumes a side view'],
+  provAbove: ['تقدير لصورة من فوق ≈{d}° (الارتفاع تقريبي)', 'elevated-view estimate ≈{d}° (height approximate)'],
+  why_from_above: ['الصورة مأخوذة من فوق فصححت الارتفاع من شكل الحافة', 'seen from above: heights corrected from the rim'],
+  size_user: ['كتبته أنت', 'typed by you'], size_ai: ['تقدير الذكاء الاصطناعي (غير مؤكد)', 'AI estimate (unverified)'],
+  size_default: ['مقاس افتراضي (غير مؤكد)', 'a typical size (unverified)'],
+  product_ai_suggestion: ['اقتراح الذكاء الاصطناعي من الصورة، بدون بحث، غير مؤكد', 'AI suggestion from the picture, not searched, unverified'],
+  product_user_verified: ['أكدتها أنت', 'confirmed by you'],
+  anConfirm: ['تأكدت أنها نفس القطعة', 'I checked: this is the product'],
+  saveProject: ['احفظ المشروع (قابل للتعديل)', 'Save project (editable)'], openProject: ['افتح مشروع', 'Open project'],
+  projectSaved: ['حفظت المشروع: تفتحه بعدين وكل جزء قابل للتعديل.', 'Project saved: open it later with every part editable.'],
+  projectOpened: ['فتحت المشروع ({n} أجزاء).', 'Project opened ({n} parts).'], projectBad: ['ما قدرت أفتح الملف: {e}', 'Could not open the file: {e}'],
+  projectName: ['مشروع', 'project'],
+  liteName: ['مسودة محلية', 'Local draft'],
+  liteWorking: ['أجهّز المسودة المحلية…', 'Preparing the local draft…'],
+  liteDownload: ['أنزّل أداة العمق (مرة وحدة، حوالي 27 ميغا)… {p}٪', 'Downloading the depth tool (once, about 27 MB)… {p}%'],
+  liteDepth: ['أقيس عمق الصورة وأبني الشكل…', 'Measuring the photo depth and building the shape…'],
+  liteDone: ['هذي مسودة محلية تقريبية (الواجهة من الصورة والخلف تقديري). عدّلها، أو جرّب الذكاء الاصطناعي بعدين لنتيجة أدق.', 'This is a rough local draft (the front from the photo, the back estimated). Edit it, or try the AI later for a closer result.'],
+  liteFail: ['ما قدرت أسوي المسودة ({e}).', 'Could not make the draft ({e}).'],
+  liteNeedCut: ['المسودة تحتاج القطعة مقصوصة من الصورة: انتظر القص أو حدّد القطعة بمربع.', 'The draft needs the piece cut out of the photo: wait for the cut-out, or select it with a box.'],
+  liteFallback: ['ما قدر أي محرك مجاني الحين، فسويت مسودة محلية.', 'No free engine could make it now, so here is a local draft.'],
+  sizeEstimate: ['المقاس تقديري: اكتب مقاس واحد حقيقي تعرفه.', 'The size is an estimate: type one real measurement you know.'],
+  sCut: ['قص بمستوى', 'Cut with a plane'], sLasso: ['اقطع بالرسم', 'Cut out by drawing'], sSplit: ['افصل القطع المنفصلة', 'Split loose pieces'],
+  sClean: ['نظّف', 'Clean up'], sSmooth: ['نعّم', 'Smooth'], sLighter: ['خفّف', 'Lighter'],
+  lassoThrough: ['الرسم يقطع لين الخلف (مو الواجهة بس)', 'Drawing cuts right through (not just the front)'],
+  cutAcross: ['القص:', 'Cut:'], axisZ: ['أفقي', 'Level'], axisX: ['عرضي', 'Across'], axisY: ['طولي', 'Along'],
+  cutGo: ['اقطع', 'Cut'], cutCancel: ['إلغاء', 'Cancel'], cutLow: ['تحت', 'low'], cutHigh: ['فوق', 'high'],
+  cutDone: ['انقسم الجزء لجزأين، وتقدر تحرّك كل واحد لحاله.', 'The part is now two parts; each moves on its own.'],
+  cutEmpty: ['المستوى ما يقطع الجزء: حرّكه لين يمرّ فيه.', 'The plane does not cross the part: move it through it.'],
+  lassoHint: ['ارسم حول المنطقة اللي تبيها جزء لحاله.', 'Draw around the area you want as a part of its own.'],
+  lassoDone: ['صار جزء لحاله، ومختار الحين.', 'It is now a part of its own, and selected.'],
+  lassoEmpty: ['الرسم ما شمل شي من الجزء، أو شمله كله.', 'The drawing took none of the part, or all of it.'],
+  lassoPart: ['قطعة', 'piece'],
+  splitDone: ['انفصل لـ {n} أجزاء.', 'Split into {n} parts.'], splitOne: ['الجزء قطعة وحدة متصلة: استعمل القص.', 'The part is one connected piece: use a cut.'],
+  pickOne: ['اختر جزء واحد أول.', 'Select one part first.'], opNothing: ['ما بقي شي بعد العملية، فما تغيّر.', 'Nothing would be left, so nothing changed.'],
+  opDone: ['تم. صار {n} مثلث.', 'Done: {n} triangles now.'],
+  mTurn: ['دوّر المجسم 90°', 'Turn the model 90°'], mSide: ['اقلبه على جنبه', 'Tip it over 90°'], mFloor: ['نزّله على الأرض', 'Set it on the floor'], mShowAll: ['أظهر كل الأجزاء', 'Show all parts'],
   judge: ['خلّ الذكاء الاصطناعي يقارن المجسم بالصورة ويصحّحه', 'Let the AI compare the model with the photo and fix it'],
   judgeWaiting: ['أنتظر القماش يستقر قبل المقارنة…', 'Waiting for the fabric to settle before comparing…'],
   judgeWorking: ['الجولة {r}: الذكاء الاصطناعي يقارن المجسم بالصورة…', 'Round {r}: the AI is comparing the model with the photo…'],
@@ -83,6 +164,7 @@ const UI = {
   judgeNoChange: ['ما شاف شي يحتاج تغيير.', 'It saw nothing to change.'],
   judgeRound: ['الجولة {r}: {s} من 10', 'Round {r}: {s} of 10'],
   judgeLeft: ['أكبر فرق باقي: {d}', 'Biggest difference left: {d}'],
+  judgeSingle: ['اقتراح من نظرة وحدة بس، ما غيّرته: {c}', 'Named by one look only, left unchanged: {c}'],
   judgeKept: ['بقي التغيير: التطابق مع الصورة {a}٪ ← {b}٪.', 'Change kept: match with the photo {a}% → {b}%.'],
   judgeUndone: ['رجّعتُ هذا التغيير لأنه بعّد المجسم عن الصورة: التطابق نزل من {a}٪ إلى {b}٪.', 'Undone: it took the model away from the photo, the match fell from {a}% to {b}%.'],
   judgeUndoing: ['الجولة {r}: التغيير بعّد المجسم عن الصورة، أرجّعه…', 'Round {r}: the change took the model away from the photo, undoing it…'],
@@ -122,6 +204,7 @@ const UI = {
   cutDownload: ['تنزيل نموذج القصّ مرة واحدة: {a} من {b} م.ب', 'Downloading the cut-out model once: {a} of {b} MB'],
   cutFail: ['تعذّر قصّ القطعة من الصورة ({e}). المقاسات القياسية مستعملة.', 'Could not cut the piece out of the photo ({e}). Standard sizes are used.'],
   fitting: ['أطابق الشكل مع الصورة… (10 إلى 30 ثانية)', 'Matching the shape to the photo… (10 to 30 seconds)'],
+  shapeChosen: ['«{o}»: الصورة توحي بـ«{a}» لكن محيطها يطابق «{b}» أكثر (تطابق المحيط {x}٪ ← {y}٪)، فاخترته.', '{o}: the picture suggested {a} but its outline matches {b} better (silhouette overlap {x}% to {y}%), so {b} was used.'],
   fitted: ['طابقتُ الشكل مع الصورة: تطابق {p}٪. «قارن بالصورة» يريك الفرق.', 'Matched to the photo: {p}% overlap. Compare with photo shows the difference.'],
   fittedLow: ['تطابق ضعيف مع الصورة ({p}٪): ربما النوع أو التفاصيل مختلفة، أو الصورة فيها أكثر من قطعة.', 'Weak match with the photo ({p}%): the piece or its details may differ, or the photo shows more than one piece.'],
   cutStalled: ['توقف تحميل أداة القص أو القص نفسه. جرّب مرة ثانية، أو حدّد القطعة بمربع.', 'The cut-out tool stopped responding while loading or cutting. Try again, or select the piece with a box.'],
@@ -143,6 +226,8 @@ const UI = {
   anSize: ['المقاس المتوقع: {w} × {d} × {h} سم ({c})', 'Likely size: {w} × {d} × {h} cm ({c})'],
   anSure_low: ['تقدير تقريبي', 'a rough guess'], anSure_medium: ['تقدير متوسط', 'a fair estimate'], anSure_high: ['تقدير قوي', 'a firm estimate'],
   anUseSize: ['استعمل هذا المقاس', 'Use this size'],
+  anProduct: ['غالباً: {p} ({c})', 'Probably: {p} ({c})'],
+  anSearch: ['ابحث عن منتجات مشابهة (وصور من الخلف والجنب تضيفها تحت)', 'Search for similar products (and back and side photos to add below)'],
   anTip: ['نصيحة: {t}', 'Tip: {t}'],
   anBy: ['قرأها {m}', 'Read by {m}'],
   geminiEmpty: ['الصق المفتاح في الحقل أولاً (Ctrl+V)، ثم اضغط حفظ.', 'Paste the key into the field first (Ctrl+V), then press Save.'],
@@ -162,9 +247,14 @@ const UI = {
   settle: ['أسقِط القماش بالفيزياء', 'Let the fabric settle'], settling: ['القماش ينزل… {s} ث', 'Fabric settling… {s} s'], stop: ['إيقاف', 'Stop'],
   settled: ['القماش نازل بالفيزياء', 'Fabric settled by physics'], drawn: ['القماش مرسوم (أسرع)', 'Fabric drawn (faster)'],
   folds: ['طيّات أخرى', 'Other folds'],
-  glb: ['تنزيل GLB', 'Download GLB'], dae: ['تنزيل DAE', 'Download DAE'],
-  importHint: ['في سكتشب: ملف ← استيراد. ملف GLB يُدخل كل جزء كمجموعة باسمه. ملف DAE للنسخ الأقدم من سكتشب: الأجزاء منفصلة لكن بلا أسماء.',
-    'In SketchUp: File → Import. GLB brings each part in as its own named group. DAE is for older SketchUp versions: the parts stay separate but lose their names.'],
+  glb: ['تنزيل لسكتش اب (GLB)', 'Download for SketchUp (GLB)'], dae: ['DAE', 'DAE'],
+  dragOut: ['اسحبني لسكتش اب', 'Drag me into SketchUp'],
+  dragTip: ['في Chrome و Edge: اسحب هذا الزر لنافذة سكتش اب أو لأي مجلد. ولو ما زبط: نزّل الملف واسحبه من التنزيلات لسكتش اب.', 'In Chrome and Edge: drag this button onto SketchUp\'s window or into a folder. If that does not work: download the file and drag it from your downloads into SketchUp.'],
+  autoAI: ['الصورة مو من الأثاث التسعة، فأصنع المجسم بالذكاء الاصطناعي…', 'The photo is not one of the nine furniture types, so the AI is making the model…'],
+  autoLite: ['الصورة مو من الأثاث التسعة: هذي مسودة محلية (ما طلعت الصورة من جهازك). لنتيجة أدق اضغط «اصنع المجسم بالذكاء الاصطناعي».', 'The photo is not one of the nine furniture types: here is a local draft (the photo did not leave this computer). For a closer result press "Make the model with AI".'],
+  aiAuto: ['اصنع المجسم بالذكاء الاصطناعي لحاله للصور اللي مو أثاث (ترسل الصورة لـ Hugging Face)', 'Make the model with AI by itself for photos that are not furniture (sends the photo to Hugging Face)'],
+  importHint: ['لسكتش اب: اسحب الملف المنزّل لنافذة سكتش اب، أو ملف ← استيراد. كل جزء يدخل مجموعة باسمه وبمقاسه الحقيقي. DAE للنسخ القديمة من سكتش اب.',
+    'Into SketchUp: drag the downloaded file onto SketchUp\'s window, or File → Import. Each part comes in as a named group at its real size. DAE is for older SketchUp versions.'],
   building: ['جارٍ البناء…', 'Building…'],
   built: ['{n} جزء، {t} مثلث', '{n} parts, {t} triangles'],
   seeLoading: ['تجهيز التعرّف على الصورة…', 'Getting photo recognition ready…'],
@@ -239,12 +329,22 @@ let viewer;
 let latestBuild = 0;
 let lastFramedKey = '';
 let buildTimer = 0;
+// the builder's items (what the fitter and the judge look at); the previous ones are freed (the document keeps its
+// own copies)
+function setItems(items) {
+  const keep = new Set(items.map((it) => it.geometry));
+  for (const it of state.items || []) if (!keep.has(it.geometry)) it.geometry.dispose();
+  state.items = items;
+}
 function scheduleBuild() { clearTimeout(buildTimer); buildTimer = setTimeout(rebuild, 90); }
 
 let autoSimFor = null;
 const needsPhysics = (req) => req.type === 'bed' && (req.attrs.bedding === 'puffy' || req.attrs.throw === 'pile');
 async function rebuild() {
-  if (state.type === 'ai') return showAI();
+  if (state.type === 'ai') {
+    if (state.aiRaw && doc && doc.source === 'ai' && state.aiDocFor === state.aiRaw) return resizeAI();
+    return showAI();
+  }
   const req = request();
   const key = keyOf(req);
   if (state.simKey !== key) { state.sims = null; }
@@ -264,8 +364,10 @@ async function rebuild() {
   if (!r.ok) { status('build', () => fill(t('failed'), { e: r.error }), true); return false; }
   state.parts = r.parts;
   const sizeKey = JSON.stringify([req.type, req.attrs.outline, req.attrs.top, req.width_cm, req.depth_cm, req.height_cm]);
-  state.items = viewer.show(r.parts, colourOfPart, sizeKey !== lastFramedKey);
+  setItems(viewer.makeItems(r.parts));
+  loadDoc(state.items, 'param', sizeKey !== lastFramedKey);
   lastFramedKey = sizeKey;
+  state.sizeSource = Object.values(typedDims()).some((v) => v > 0) ? 'user' : 'default';
   status('build', () => fill(t('built'), { n: nf(r.parts.length), t: nf(r.triangles) }));
   showDims();
   renderActions(r.cloth);
@@ -273,6 +375,40 @@ async function rebuild() {
   // the puffy duvet and the piled throw get their shape from the physics: it runs by itself for them, once per piece
   else if (mine === latestBuild && !fitting && !state.sims && r.cloth && needsPhysics(req) && autoSimFor !== key) { autoSimFor = key; setTimeout(settle, 50); }
   return mine === latestBuild;
+}
+
+// ---------------------------------------------------------------- the document (what is shown, edited, exported)
+let doc = null;
+let history = null;
+let editor = null;
+// A new build replaces the parts. When the user had edited parts by hand, the replacement is an undoable step and a
+// note says so; otherwise history starts afresh with the new model.
+function loadDoc(items, source, frame) {
+  if (!doc) return;
+  history.adopt(doc);
+  if (doc.edited && doc.parts.length) {
+    history.record(doc, 'rebuild', () => doc.load(items, source));
+    status('build', () => t('editLost'));
+  } else {
+    doc.load(items, source);
+    history.clear(doc);
+  }
+  editor.refresh(frame);
+  prepareDrag();
+  paintProvenance();
+}
+// hand edits are what export writes; the option lists rebuild the piece from scratch
+function paintEditNote() {
+  $('#editNote').hidden = !(doc && doc.edited && doc.source === 'param');
+}
+function clearDoc() {
+  if (!doc) { if (viewer) viewer.clear(); return; }
+  history.adopt(doc);
+  doc.clear();
+  history.clear(doc);
+  viewer.clear();
+  editor.refresh();
+  prepareDrag();
 }
 
 function showDims() {
@@ -370,6 +506,8 @@ async function takePhoto(file) {
   state.aiRaw = null;
   state.aiCands = []; state.aiPick = -1; paintCands();
   stopJudge(); state.judge = null; paintJudge(); status('judge', ''); $('#judge').hidden = true;
+  if (aiBusyNow()) cancelAI(); // a model being made for the last photo is not wanted any more
+  state.aiRaw = null; state.aiDocFor = null;
   for (const side of ['back', 'left', 'right']) setView(side, null); // the extra photos belonged to the last piece
   state.photoSeed = crc32(bytes) & 0x7fffffff; // the same photo gives the same folds as in the extension
   state.foldShift = 0;
@@ -392,7 +530,6 @@ async function takePhoto(file) {
   cutOut(px, w, h, c, mine);
   $('#thumb').src = state.photo;
   $('#drop').classList.add('has');
-  $('#colourPhoto').disabled = false;
   renderForm();
   scheduleBuild();
   const shot = await createImageBitmap(c);
@@ -424,12 +561,31 @@ function onSeen(m) {
   else if (m.status === 'error') { status('see', () => fill(t('seeFail'), { e: m.error }), true); $('#seeBar').hidden = true; $('#skipSee').hidden = true; }
   else if (m.status === 'done') { $('#skipSee').hidden = true; applySeen(m.result); }
 }
+// Any photo becomes 3D: when the photo is not one of the nine furniture types (and the user did not pick a type),
+// the AI engines start by themselves once the cut-out is ready, once per photo; when they fail, the local draft does.
+// The photo goes to Hugging Face only when the user said so: by pressing "make with AI", or once and for all with
+// the "make it with AI by itself" switch. Without it, the automatic route is the local draft (nothing leaves the
+// computer); the AI button stays one press away.
+const aiAutoOn = () => store.get('aiAuto') === '1';
+function maybeAutoAI() {
+  if (state.type !== 'ai' || state.typeByUser || state.aiRaw || !state.photo || state.autoAIFor === photoJob) return;
+  if (aiBusyNow()) return; // something is already being made
+  const photo = photoJob;
+  state.autoAIFor = photo;
+  waitFor(() => state.cut && state.cut.mask, 240000).then(async (ready) => {
+    if (!ready || photo !== photoJob || state.type !== 'ai' || state.aiRaw || aiBusyNow()) return;
+    if (readingFor === photo) await waitFor(() => readingFor !== photo || photo !== photoJob, 90000);
+    if (photo !== photoJob || state.type !== 'ai' || state.aiRaw || aiBusyNow()) return;
+    if (makeProfile(true)) return;
+    if (aiAutoOn()) { status('ai', () => t('autoAI')); makeAI(); } else makeLite(t('autoLite'));
+  });
+}
 function applySeen(r) {
   const p = Math.round(r.confidence * 100);
   const sure = r.type !== 'other' && r.confidence >= 0.45;
   if (sure) state.wantFit = true; // matched to the photo once the recognised piece is built
   if (sure && !state.typeByUser) state.type = r.type;
-  if (r.type === 'other' && r.confidence >= 0.45 && !state.typeByUser) state.type = 'ai';
+  if (r.type === 'other' && r.confidence >= 0.45 && !state.typeByUser) { state.type = 'ai'; setTimeout(maybeAutoAI, 0); }
   // what the earlier photo set gives way to this one; choices made by hand since this photo stay
   if (sure) state.fromPhoto = {};
   for (const type of Object.keys(sure ? r.styles || {} : {})) {
@@ -471,6 +627,7 @@ const seeSchema = () => (seeSchemaCache = seeSchemaCache || analysisSchema(TYPES
 let aiSeeJob = 0;
 let aiSeeFor = 0;
 let aiAbort = null;
+let readingFor = null; // the photo whose reading is on its way
 function readDetails(src) {
   if (!state.photoCanvas) return;
   if (!hasKey()) { status('seeAI', () => t('seeAINoToken'), true); paintKeyRow(); return; }
@@ -482,6 +639,7 @@ function readDetails(src) {
   const id = ++aiSeeJob;
   state.aiSeen = null;
   aiSeeFor = photoJob;
+  readingFor = photoJob;
   paintAnalysis();
   status('seeAI', () => t('seeAIWorking'));
   const body = geminiBody(seePrompt(), c.toDataURL('image/jpeg', 0.9), seeSchema(), { thinking: window.__seeThinking });
@@ -496,6 +654,7 @@ function readDetails(src) {
 }
 function stopReading() {
   aiSeeJob++;
+  readingFor = null;
   if (aiAbort) aiAbort.abort();
   aiAbort = null;
   if (window.sketchup && window.sketchup.aim3d_see_cancel) window.sketchup.aim3d_see_cancel('read');
@@ -503,7 +662,7 @@ function stopReading() {
 function applyAISeen(seen) {
   if (!state.typeByUser) {
     if (TYPES.includes(seen.type)) state.type = seen.type;
-    else if (seen.type === 'other') state.type = 'ai';
+    else if (seen.type === 'other') { state.type = 'ai'; setTimeout(maybeAutoAI, 0); }
   }
   if (!TYPES.includes(seen.type)) return;
   const vals = state.vals[seen.type] = state.vals[seen.type] || {};
@@ -558,6 +717,16 @@ function paintAnalysis() {
   $('#anTip').textContent = ar && a.tip ? fill(t('anTip'), { t: a.tip }) : '';
   $('#anTip').hidden = !ar || !a.tip;
   $('#anBy').textContent = fill(t('anBy'), { m: a.model || 'Gemini' });
+  // what the product probably is, and a search for more photos of it (the user picks back and side views)
+  const known = a.product && a.productSure !== 'none';
+  $('#anProduct').hidden = !known;
+  if (known) $('#anProduct').textContent = fill(t('anProduct'), { p: [a.maker, a.product].filter(Boolean).join(' — '), c: t(`anSure_${a.productSure === 'high' ? 'high' : a.productSure === 'medium' ? 'medium' : 'low'}`) });
+  const q = a.query || a.name;
+  $('#anSearch').hidden = !q;
+  if (q) $('#anSearch').href = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q)}`;
+  $('#anConfirmRow').hidden = !known;
+  $('#anConfirm').checked = state.productConfirmed === photoJob;
+  paintProvenance();
 }
 function useAISize() {
   const s = state.aiSeen && state.aiSeen.size;
@@ -578,6 +747,7 @@ window.aim3dSee = (m) => {
   }
   if (!m || m.job !== aiSeeJob || aiSeeFor !== photoJob) return; // an older photo's answer
   aiAbort = null;
+  readingFor = null;
   if (m.status === 'error') {
     if (m.bad_key) { keyBad = true; paintKeyRow(); } // the key field comes back for a new key
     const why = m.error === 'no_key' ? null
@@ -651,7 +821,7 @@ function paintViewNote() {
   n.textContent = viewNote ? t(viewNote) : '';
 }
 function paintStatus(where) {
-  const el = where === 'see' ? $('#seeState') : where === 'seeAI' ? $('#seeAIState') : where === 'judge' ? $('#judgeState') : where === 'fit' ? $('#fitState') : where === 'ai' ? $('#aiState') : $('#buildState');
+  const el = where === 'see' ? $('#seeState') : where === 'seeAI' ? $('#seeAIState') : where === 'judge' ? $('#judgeState') :  where === 'fit' ? $('#fitState') : where === 'ai' ? $('#aiState') : $('#buildState');
   const st = shown[where];
   el.textContent = st ? st.make() : '';
   el.classList.toggle('bad', !!(st && st.bad));
@@ -673,6 +843,7 @@ function applyLang() {
   paintCands();
   paintStatus('judge');
   paintJudge();
+  $('#dragOut').title = t('dragTip');
   showSense();
   paintViewNote();
   $('#view').setAttribute('aria-label', t('view3d'));
@@ -680,13 +851,40 @@ function applyLang() {
   $('#seeBar').setAttribute('aria-label', t('seeLoading'));
 }
 
-async function exportAs(kind) {
-  if (!state.items.length) return;
-  const name = `AIM ${TYPE_T[state.type][1]}`;
-  const items = state.items.map((it) => ({ name: it.name, geometry: it.geometry, color: it.color,
-    materialName: state.colour === 'photo' && state.pal ? `AIM ${it.role || 'white'}` : 'AIM 3D Studio white' }));
+// what the user sees, edits included, in one white material -> { blob, filename } or null
+async function modelBlob(kind) {
+  if (!doc || !doc.parts.some((p) => p.visible)) return null;
+  const kinds = new Set(doc.parts.filter((p) => p.visible).map((p) => p.kind));
+  const name = kinds.has('lite') ? 'AIM rough draft' : state.type === 'ai' ? `AIM ${state.aiEngine || 'AI'}` : `AIM ${TYPE_T[state.type][1]}`;
+  const items = doc.exportItems().map((it) => ({ ...it, color: [242, 242, 242], materialName: 'AIM white' }));
   const blob = kind === 'glb' ? await toGLB(items, name) : toDAE(items, name);
-  download(blob, `${name.replace(/\s+/g, '-')}.${kind}`);
+  for (const it of items) it.geometry.dispose();
+  return { blob, filename: `${name.replace(/[\s:/\\]+/g, '-')}.${kind}` };
+}
+async function exportAs(kind) {
+  const r = await modelBlob(kind);
+  if (r) download(r.blob, r.filename);
+}
+// Dragging the model out: a drag must carry its file at once, so the GLB is kept ready (made again shortly after
+// each change). Chromium (Chrome, Edge) writes a DownloadURL drag where it is dropped; elsewhere the button
+// downloads the file instead.
+let dragFile = null;
+let dragTimer = 0;
+let dragGen = 0;
+function prepareDrag() {
+  clearTimeout(dragTimer);
+  const gen = ++dragGen;
+  // the old file goes at once: until the new one is ready the button waits rather than carry the old model
+  if (dragFile) URL.revokeObjectURL(dragFile.url);
+  dragFile = null;
+  $('#dragOut').classList.add('waiting');
+  dragTimer = setTimeout(async () => {
+    const r = await modelBlob('glb');
+    if (gen !== dragGen) return; // changed again meanwhile
+    dragFile = r ? { url: URL.createObjectURL(r.blob), name: r.filename } : null;
+    $('#dragOut').hidden = !dragFile;
+    $('#dragOut').classList.remove('waiting');
+  }, 500);
 }
 
 // ---------------------------------------------------------------- AI pieces (free engines on Hugging Face)
@@ -695,12 +893,40 @@ async function exportAs(kind) {
 // the photo's cut-out (the fitter, proportions locked) and keeps the closest, with the overlays side by side.
 function showAI() {
   renderActions('none');
-  if (!state.aiRaw) { viewer.clear(); state.parts = []; state.items = []; $('#dims').hidden = true; status('build', ''); return false; }
-  const part = sized(state.aiRaw, typedDims());
-  state.parts = [part];
-  state.items = viewer.show([part], () => null, true);
+  if (!state.aiRaw) { clearDoc(); state.parts = []; setItems([]); $('#dims').hidden = true; status('build', ''); return false; }
+  // size: what the user typed, else the AI's estimate of this photo's object, else 100 cm high (a photo has no scale)
+  const seen = state.aiSeen && state.aiSeen.photo === photoJob && state.aiSeen.size;
+  const part = sized(state.aiRaw, typedDims(), seen ? seen.h : 100);
+  state.sizeIsEstimate = !Object.values(typedDims()).some((v) => v > 0);
+  state.sizeSource = state.sizeIsEstimate ? (seen ? 'ai' : 'default') : 'user';
+  // one part per connected piece, so each can be moved, turned or cut on its own
+  const pieces = splitPieces(part.pos, part.tris, 20);
+  const parts = pieces.length > 1 && pieces.length <= 60
+    ? pieces.map((m, k) => ({ name: `${t('aiPiece')} ${k + 1}`, role: null, pos: m.pos, tris: m.tris }))
+    : [{ ...part, name: t('aiObject') }];
+  state.parts = parts;
+  setItems(viewer.makeItems(parts));
+  loadDoc(state.aiRaw.lite ? state.items.map((it) => ({ ...it, kind: 'lite' })) : state.items, 'ai', true);
+  state.aiDocFor = state.aiRaw;
   showDims();
-  status('build', () => fill(t('built'), { n: nf(1), t: nf(part.tris.length / 3) }));
+  status('build', () => fill(t('built'), { n: nf(parts.length), t: nf(part.tris.length / 3) }) + (state.sizeIsEstimate ? ` ${t('sizeEstimate')}` : ''));
+  return true;
+}
+// one measurement the user knows scales the whole model (as built, edits included) so that side has its length
+function resizeAI() {
+  const typed = typedDims();
+  const b = doc.bounds(true);
+  const have = { w: b.max.x - b.min.x, d: b.max.y - b.min.y, h: b.max.z - b.min.z };
+  const key = typed.w ? 'w' : typed.d ? 'd' : typed.h ? 'h' : null;
+  if (!key || !(have[key] > 0)) return true;
+  const k = typed[key] / have[key];
+  if (Math.abs(k - 1) < 1e-4) return true;
+  history.record(doc, 'size', () => doc.scaleAll(k), { merge: true });
+  state.sizeIsEstimate = false;
+  state.sizeSource = 'user';
+  editor.refresh();
+  showDims();
+  prepareDrag();
   return true;
 }
 let aiRun = 0; // the current request (one model, or the best of the engines): a newer one or Stop silences the older
@@ -711,6 +937,7 @@ const aiPending = new Map(); // extension job -> { resolve, reject, onStatus }
 const relayAI = () => !!(window.sketchup && window.sketchup.aim3d_ai_start);
 const hasHFToken = () => (relayAI() ? !!(host && host.has_token) : !!store.get('hf'));
 const blobToDataURL = (b) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(b); });
+const aiBusyNow = () => $('#aiMake').disabled || $('#aiLite').disabled;
 function aiBusy(on) { $('#aiMake').disabled = on; $('#aiBest').disabled = on; $('#aiCancel').hidden = !on; }
 const viewBlobs = () => (['back', 'left', 'right'].some((k) => state.views[k]) ? { ...state.views } : null);
 // One model: from one engine (only) or the first engine of the chain that delivers. Resolves { glb, engine }.
@@ -733,10 +960,12 @@ async function runEngines({ image, views = null, engine = '', only = false, onSt
   });
 }
 const quotaNote = () => t(hasHFToken() ? 'aiQuotaToken' : 'aiQuota');
+// the engines' buttons are off while one works; the local draft stays reachable (it stops them)
 const aiFailText = (e) => fill(t('aiFailAll'), { e: e.message }) + (e.token ? t('aiToken') : e.quota ? quotaNote() : '');
 async function makeAI() {
   if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
   const run = ++aiRun;
+  const photo = photoJob;
   aiBusy(true);
   state.aiCands = [];
   paintCands();
@@ -744,16 +973,24 @@ async function makeAI() {
     const views = viewBlobs();
     const image = await (await fetch(aiPhoto(!!views))).blob();
     const r = await runEngines({ image, views, onStatus: (text) => { if (run === aiRun) status('ai', () => text); } });
-    if (run === aiRun) await gotModel(r.glb, r.engine);
+    if (run === aiRun && photo === photoJob) await gotModel(r.glb, r.engine, () => run === aiRun && photo === photoJob);
   } catch (e) {
-    if (run === aiRun && e.name !== 'AbortError') status('ai', () => aiFailText(e), true);
+    if (run === aiRun && photo === photoJob && e.name !== 'AbortError') {
+      aiBusy(false);
+      // no free engine could make it: the local draft does, at once
+      if (state.cut && state.cut.mask) makeLite(t('liteFallback'));
+      else status('ai', () => aiFailText(e), true);
+    }
   } finally {
     if (run === aiRun) aiBusy(false);
   }
 }
-async function gotModel(buffer, engine) {
+// current(): still the run and the photo it was made for (parsing takes a moment; Stop or a new photo may come first)
+async function gotModel(buffer, engine, current = () => true) {
   try {
-    state.aiRaw = toPart(await readGLB(buffer));
+    const raw = cleaned(toPart(await readGLB(buffer)));
+    if (!current()) return false;
+    state.aiRaw = raw;
     state.aiEngine = engine;
     status('ai', () => fill(t('aiDone'), { e: engine }));
     showAI();
@@ -778,6 +1015,7 @@ async function bestOf() {
   if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
   if (!state.cut || !state.cut.mask || !viewer || !viewer.ok) { status('ai', () => t('aiBestNoCut'), true); return; }
   const run = ++aiRun;
+  const photo = photoJob;
   aiBusy(true);
   const views = viewBlobs();
   // TRELLIS.2 reserves more free GPU time than an anonymous visitor has: it joins with a token
@@ -788,6 +1026,7 @@ async function bestOf() {
   try {
     const image = await (await fetch(aiPhoto(!!views))).blob();
     for (let i = 0; i < list.length; i++) {
+      if (run !== aiRun || photo !== photoJob) return; // stopped, or a new photo: no further upload
       const s = list[i];
       const c = { engine: s.name };
       cands.push(c);
@@ -796,8 +1035,9 @@ async function bestOf() {
       say(fill(t('aiStep_connect'), { e: s.name }));
       try {
         const r = await runEngines({ image, views: s.views ? views : null, engine: s.id, only: true, onStatus: say });
-        if (run !== aiRun) return;
-        c.raw = toPart(await readGLB(r.glb));
+        if (run !== aiRun || photo !== photoJob) return;
+        c.raw = cleaned(toPart(await readGLB(r.glb)));
+        if (run !== aiRun || photo !== photoJob) return;
         say(fill(t('aiBestScoring'), { e: s.name }));
         Object.assign(c, await scoreAI(c.raw));
       } catch (e) {
@@ -811,6 +1051,8 @@ async function bestOf() {
     }
     const ok = cands.filter((c) => c.raw);
     if (!ok.length) {
+      aiBusy(false);
+      if (state.cut && state.cut.mask) { makeLite(t('liteFallback')); return; }
       status('ai', () => t('aiBestNone') + (cands.some((c) => c.error === t('aiBestQuota')) ? quotaNote() : ''), true);
       state.aiRaw = null; showAI();
       return;
@@ -856,6 +1098,173 @@ function paintCands() {
     box.appendChild(card);
   });
 }
+// ---- route P, the profile: a rotational object (vase, pot, bowl, bottle, round shade) revolved from the profile of its
+// cut-out (profile.js). Local, exact for such objects when seen from the side, and the part keeps its profile, so it
+// stays editable. The automatic route takes it only when the photo reading says the body is round in plan and the
+// mask raises no doubt (symmetry, axis, tilt, cropping, gaps, handles, resolution); a square pot has a symmetric
+// outline too, so symmetry alone never decides. Pressed by hand it builds with the doubts shown as warnings.
+// Hollow or solid comes from what the reading says about the top (or the kind of object), never from depth, and is
+// one switch in the profile panel.
+const HOLLOW_WORDS = /\b(vase|pot|planter|bowl|cup|mug|jar|urn|vessel|basket|bucket|glass|pitcher|jug|bottle|shade)s?\b/i;
+const SOLID_WORDS = /\b(stool|seat|table|top|lid|cushion|pouf|ottoman|column|post)s?\b/i;
+function hollowFor(seen) {
+  if (!seen) return false;
+  if (seen.opening === 'open' || seen.opening === 'narrow') return true;
+  if (seen.opening === 'closed') return false;
+  const words = `${seen.name} ${seen.nameAr}`;
+  return HOLLOW_WORDS.test(words) && !SOLID_WORDS.test(words);
+}
+function makeProfile(auto = false) {
+  const cut = state.cut;
+  if (!cut || !cut.mask) { if (!auto) status('ai', () => t('liteNeedCut'), true); return false; }
+  const seen = state.aiSeen && state.aiSeen.photo === photoJob ? state.aiSeen : null;
+  if (auto && !(seen && seen.roundBody === 'yes')) return false; // the outline alone cannot tell round from square
+  const typed = typedDims();
+  const height = typed.h || (seen && seen.size && seen.size.h) || 40;
+  // a rim seen from above is looked for when the top is known to be open (or, more strictly, when nothing is known)
+  const open = !seen ? 'unknown' : seen.opening === 'open' ? 'open' : seen.opening === 'unknown' ? 'unknown' : 'none';
+  const r = profileFromMask(cut.mask, cut.w, cut.h, { heightCm: height, strict: auto, open });
+  if (!r || !r.points) {
+    if (!auto) status('ai', () => fill(t('profileNo'), { s: nf(Math.round(((r && r.score) || 0) * 100)), why: whyList(r && r.reasons) }), true);
+    return false;
+  }
+  const maxR = Math.max(...r.points.map((p) => p.r));
+  const profile = {
+    points: r.points, extracted: r.points.map((q) => ({ ...q })), outline: r.outline, locked: [], alt: r.alt,
+    hollow: hollowFor(seen) || (!seen && r.camera.view === 'above'), // a rim seen from above is an open top
+    wall: Math.max(0.4, Math.round(maxR * 0.06 * 10) / 10), segments: 64, camera: r.camera,
+  };
+  const mesh = revolve(profile.points, profile);
+  const geometry = kitGeometry({ pos: mesh.pos, tris: mesh.tris });
+  if (aiBusyNow()) cancelAI();
+  state.aiRaw = { pos: mesh.pos, tris: mesh.tris, size: r.size };
+  state.aiEngine = t('profileName');
+  state.aiCands = []; paintCands();
+  if (state.type !== 'ai') { state.type = 'ai'; renderForm(); }
+  renderActions('none');
+  setItems([{ name: t('profilePart'), role: null, geometry, color: [244, 244, 241] }]);
+  loadDoc([{ name: t('profilePart'), geometry: geometry.clone(), kind: 'profile', params: { profile } }], 'ai', true);
+  state.aiDocFor = state.aiRaw;
+  state.sizeSource = typed.h ? 'user' : seen && seen.size && seen.size.h ? 'ai' : 'default';
+  state.sizeIsEstimate = !typed.h;
+  showDims();
+  const warn = r.warnings.length ? ` ${fill(t('profileWarn'), { why: whyList(r.warnings) })}` : '';
+  status('ai', () => fill(t(auto ? 'profileAuto' : 'profileDone'), { s: nf(Math.round(r.score * 100)), n: nf(r.points.length) }) + warn, r.warnings.length > 0);
+  status('build', () => fill(t('built'), { n: nf(1), t: nf(mesh.tris.length / 3) }) + (state.sizeIsEstimate ? ` ${t('sizeEstimate')}` : ''));
+  if (doc.parts[0]) editor.select([doc.parts[0].id]);
+  paintProvenance();
+  return true;
+}
+const whyList = (list) => (list || []).map((k) => t(`why_${k}`)).join(t('listSep'));
+
+// ---- provenance: three separate things, each with where it came from; nothing unverified is shown as verified
+//   geometry  how each part was made (rules / AI engine x / rough local draft / profile, side view assumed / opened)
+//   size      typed by the user / AI estimate / a typical size
+//   product   AI suggestion (recognised from the picture, not searched) / confirmed by the user / none
+function provenance() {
+  const kinds = doc ? [...new Set(doc.parts.map((p) => p.kind))] : [];
+  const seen = state.aiSeen && state.aiSeen.photo === photoJob ? state.aiSeen : null;
+  const named = !!(seen && seen.product && seen.productSure !== 'none');
+  return {
+    geometry: kinds, engine: kinds.includes('ai') ? state.aiEngine || '' : '',
+    size: state.sizeSource || (state.sizeIsEstimate ? 'default' : 'user'),
+    product: named ? (state.productConfirmed === photoJob ? 'user_verified' : 'ai_suggestion') : 'none',
+    productName: named ? [seen.maker, seen.product].filter(Boolean).join(' — ') : '',
+    camera: cameraOf(),
+  };
+}
+function cameraOf() {
+  const p = doc && doc.parts.find((q) => q.params && q.params.profile);
+  if (!p) return 'unknown';
+  const c = p.params.profile.camera;
+  return c && c.view === 'above' ? `above_${c.elevDeg}` : 'side_view_assumed';
+}
+function paintProvenance() {
+  const el = $('#provenance');
+  if (!el) return;
+  if (!doc || !doc.parts.length) { el.hidden = true; return; }
+  const p = provenance();
+  const how = p.geometry.map((k) => (k === 'ai' && p.engine ? `${t('kind_ai')} (${p.engine})` : t(`kind_${k}`))).join(t('listSep'));
+  const bits = [fill(t('provGeometry'), { v: how }), fill(t('provSize'), { v: t(`size_${p.size}`) })];
+  if (p.product !== 'none') bits.push(fill(t('provProduct'), { v: `${p.productName} — ${t(`product_${p.product}`)}` }));
+  if (p.camera === 'side_view_assumed') bits.push(t('provCamera'));
+  else if (p.camera.startsWith('above_')) bits.push(fill(t('provAbove'), { d: nf(Number(p.camera.slice(6))) }));
+  el.textContent = bits.join(' · ');
+  el.hidden = false;
+}
+
+// ---- the project file: save and open again with every part editable as it was (project.js)
+function saveProject() {
+  if (!doc || !doc.parts.length) return;
+  const json = JSON.stringify(toProject(doc, provenance()));
+  const name = (state.type === 'ai' ? `AIM ${state.aiEngine || 'model'}` : `AIM ${TYPE_T[state.type][1]}`).replace(/[\s:/\\]+/g, '-');
+  download(new Blob([json], { type: 'application/json' }), `${name}.aim3d`);
+  status('build', () => t('projectSaved'));
+}
+async function openProject(file) {
+  let r;
+  try { r = fromProject(await file.text()); } catch (e) { status('build', () => fill(t('projectBad'), { e: e.message }), true); return; }
+  if (aiBusyNow()) cancelAI();
+  history.adopt(doc);
+  history.record(doc, 'open', () => {
+    doc.parts = r.parts; doc.source = 'ai'; doc.edited = true; doc.version++;
+    doc.frame = r.frame; doc.mirrorPlane = r.mirrorPlane; doc.pairs = r.pairs;
+  });
+  // the page shows it as an AI-type model: the form's options do not rebuild it; a typed size scales it
+  state.type = 'ai'; state.typeByUser = true; renderForm();
+  state.aiRaw = { project: true }; state.aiDocFor = state.aiRaw; state.aiEngine = t('projectName');
+  state.sizeSource = r.provenance.size || 'default';
+  setItems([]);
+  editor.refresh(true);
+  editor.select(doc.parts.length === 1 ? [doc.parts[0].id] : []);
+  showDims();
+  prepareDrag();
+  paintProvenance();
+  status('build', () => fill(t('projectOpened'), { n: nf(doc.parts.length) }));
+}
+
+// ---- the local draft: Depth Anything + inflation on this computer (lite.worker.js); no quota, rough
+let liteWorker = null;
+let liteJob = 0;
+function makeLite(why = '') {
+  if (!state.photo) { status('ai', () => t('aiNeedPhoto'), true); return; }
+  if (!state.cut || !state.cut.mask) { status('ai', () => t('liteNeedCut'), true); return; }
+  // the engines give way: the draft is what the user asked for now
+  if (aiWebAbort) aiWebAbort.abort();
+  aiWebAbort = null;
+  if (window.sketchup && window.sketchup.aim3d_ai_cancel) window.sketchup.aim3d_ai_cancel('{}');
+  const run = ++aiRun;
+  const photo = photoJob;
+  aiBusy(true);
+  $('#aiLite').disabled = true;
+  if (!liteWorker) liteWorker = new Worker(new URL('./lite.worker.js', import.meta.url), { type: 'module' });
+  const job = ++liteJob;
+  const prefix = why ? `${why} ` : '';
+  status('ai', () => prefix + t('liteWorking'));
+  liteWorker.onmessage = (e) => {
+    const m = e.data;
+    if (m.job !== liteJob || run !== aiRun || photo !== photoJob) return;
+    if (m.status === 'download') { status('ai', () => prefix + fill(t('liteDownload'), { p: nf(Math.round(m.loaded / m.total * 100)) })); return; }
+    if (m.status === 'depth') { status('ai', () => prefix + t('liteDepth')); return; }
+    aiBusy(false);
+    $('#aiLite').disabled = false;
+    if (m.status === 'error') { status('ai', () => fill(t('liteFail'), { e: m.error }), true); return; }
+    // a furniture type the user picked meanwhile stays: the draft is not forced on it
+    if (state.typeByUser && state.type !== 'ai') return;
+    state.aiRaw = { pos: m.pos, tris: m.tris, size: m.size, lite: true };
+    state.aiEngine = t('liteName');
+    state.aiCands = []; paintCands();
+    if (state.type !== 'ai') { state.type = 'ai'; renderForm(); }
+    showAI();
+    status('ai', () => prefix + t('liteDone'));
+  };
+  const big = state.photoBig || state.photoCanvas;
+  createImageBitmap(big).then((bitmap) => {
+    const cut = state.cut;
+    liteWorker.postMessage({ job, bitmap, mask: cut.mask, mw: cut.w, mh: cut.h, grid: state.quality === 'high' ? 224 : 160 }, [bitmap]);
+  });
+}
+
 // ---- more photos of the same piece: three slots, or four frames from a turntable video
 function setView(side, blob) {
   if (state.viewUrls[side]) URL.revokeObjectURL(state.viewUrls[side]);
@@ -992,6 +1401,8 @@ function cancelAI() {
   for (const p of aiPending.values()) p.reject(stopped);
   aiPending.clear();
   if (window.sketchup && window.sketchup.aim3d_ai_cancel) window.sketchup.aim3d_ai_cancel('{}');
+  liteJob++;
+  $('#aiLite').disabled = false;
   aiBusy(false);
   status('ai', '');
 }
@@ -1170,6 +1581,41 @@ let fitting = false;
 const typedDims = () => ({ w: Number(state.w) || 0, d: Number(state.d) || 0, h: Number(state.h) || 0 });
 
 // Two passes: proportions and camera on the current build, then a refinement on the rebuilt piece.
+// Options that change the outline (a table's top, a bed's outline): when the photo, not the user, chose them, the
+// outline gets a say. Each choice is built and fitted the full way (sizes and camera); another one is kept only when
+// area and outline together (IoU + edge F-score) are clearly better and the area is not worse; the page says so.
+// Once per photo.
+const SHAPE_KEYS = { table: ['top'], coffee_table: ['top'], bed: ['outline'] };
+async function chooseShape(type) {
+  const keys = (SHAPE_KEYS[type] || []).filter((k) => OPTIONS[type][k] && !((state.userSet[type] || {})[k]));
+  const notes = [];
+  for (const k of keys) {
+    const cur = optionsFor(type, state.vals[type] || {})[k];
+    const scores = [];
+    for (const v of OPTIONS[type][k]) {
+      state.vals[type] = { ...(state.vals[type] || {}), [k]: v };
+      state.fitDims = null;
+      clearTimeout(buildTimer);
+      if (!(await rebuild())) continue;
+      const q = await fitPasses(type); // the same fit the chosen one gets: sizes and camera, rebuilt
+      scores.push({ v, iou: q ? q.iou : 0, edge: q ? fitter.edgeScore(state.cut, q) : 0 });
+    }
+    // area and outline together; another choice wins only by a clear margin and never by losing area
+    const now = scores.find((x) => x.v === cur);
+    const value = (x) => x.iou + x.edge;
+    const best = scores.slice().sort((a, b) => value(b) - value(a))[0];
+    const pick = best && now && best.v !== cur && value(best) >= value(now) + 0.05 && best.iou >= now.iou - 0.005 ? best.v : cur;
+    state.vals[type] = { ...state.vals[type], [k]: pick };
+    if (pick !== cur) notes.push({ k, from: cur, to: pick, a: now.iou, b: best.iou });
+    state.shapeScores = { ...(state.shapeScores || {}), [k]: scores };
+  }
+  state.fitDims = null;
+  clearTimeout(buildTimer);
+  await rebuild();
+  if (notes.length) renderForm();
+  return notes;
+}
+
 async function runFit() {
   if (fitting || !state.cut || !viewer || !viewer.ok || !state.items.length || state.type === 'ai') return;
   fitting = true;
@@ -1179,6 +1625,36 @@ async function runFit() {
     await new Promise((r) => setTimeout(r, 40)); // the message is painted before the search takes the thread
     if (!fitter) fitter = new Fitter(viewer.renderer);
     const type = state.type;
+    let shapeNotes = [];
+    if (state.shapeFor !== photoJob) { state.shapeFor = photoJob; shapeNotes = await chooseShape(type); }
+    const last = await fitPasses(type);
+    if (last) {
+      state.fitResult = last;
+      state.sense = fitter.sensitivity(state.cut, last);
+      showSense();
+      state.partColors = fitter.partColours(state.photoCanvas, state.cut, last);
+      const pc = Math.round(last.iou * 100);
+      const shapeSaid = shapeNotes.map((n) => fill(t('shapeChosen'), { o: optLabel(n.k), a: valLabel(n.k, n.from), b: valLabel(n.k, n.to), x: nf(Math.round(n.a * 100)), y: nf(Math.round(n.b * 100)) })).join(' ');
+      status('fit', () => fill(t(pc >= 70 ? 'fitted' : 'fittedLow'), { p: nf(pc) }) + (shapeSaid ? ` ${shapeSaid}` : ''), pc < 70);
+      $('#compare').hidden = false;
+      // the fitted model is a close match of its kind; the AI copies the photo's own shape (folds, heaps) as one mesh
+      $('#exactAI').hidden = false;
+      $('#judge').hidden = false;
+      maybeAutoJudge();
+    }
+  } catch (err) {
+    status('fit', () => fill(t('cutFail'), { e: err.message }), true);
+  } finally {
+    fitting = false;
+    // the builds during the fit skipped the physics the new looks need: it runs now, on the fitted piece
+    const req = request();
+    if (!state.sims && needsPhysics(req) && autoSimFor !== keyOf(req)) { autoSimFor = keyOf(req); setTimeout(settle, 50); }
+  }
+}
+// the size passes: fit the camera and proportions, rebuild at those sizes, again until nothing changes; then the
+// final fit at the built size. -> that fit ({ iou, ... }) or null
+async function fitPasses(type) {
+  {
     const o = optionsFor(type, state.vals[type] || {});
     const typed = typedDims();
     const nTyped = ['w', 'd', 'h'].filter((k) => typed[k] > 0).length;
@@ -1209,29 +1685,9 @@ async function runFit() {
       const ok = await rebuild();
       if (!ok) break;
     }
-    if (p) {
-      fitter.setModel(state.items);
-      const last = fitter.fit(state.cut, { limits: { sy: [1, 1], sz: [1, 1] }, locked: { sy: true, sz: true }, start: { ...p, sy: 1, sz: 1 } });
-      state.fitResult = last;
-      state.sense = fitter.sensitivity(state.cut, last);
-      showSense();
-      state.partColors = fitter.partColours(state.photoCanvas, state.cut, last);
-      if (state.colour === 'photo') state.items = viewer.show(state.parts, colourOfPart, false);
-      const pc = Math.round(last.iou * 100);
-      status('fit', () => fill(t(pc >= 70 ? 'fitted' : 'fittedLow'), { p: nf(pc) }), pc < 70);
-      $('#compare').hidden = false;
-      // the fitted model is a close match of its kind; the AI copies the photo's own shape (folds, heaps) as one mesh
-      $('#exactAI').hidden = false;
-      $('#judge').hidden = false;
-      maybeAutoJudge();
-    }
-  } catch (err) {
-    status('fit', () => fill(t('cutFail'), { e: err.message }), true);
-  } finally {
-    fitting = false;
-    // the builds during the fit skipped the physics the new looks need: it runs now, on the fitted piece
-    const req = request();
-    if (!state.sims && needsPhysics(req) && autoSimFor !== keyOf(req)) { autoSimFor = keyOf(req); setTimeout(settle, 50); }
+    if (!p) return null;
+    fitter.setModel(state.items);
+    return fitter.fit(state.cut, { limits: { sy: [1, 1], sz: [1, 1] }, locked: { sy: true, sz: true }, start: { ...p, sy: 1, sz: 1 } });
   }
 }
 
@@ -1241,10 +1697,12 @@ async function runFit() {
 // the piece is rebuilt and matched again, and a second round checks the result. A value once replaced is not offered
 // again, so the loop cannot swing back and forth. The outline is the referee: a round whose changes take the model's
 // outline further from the photo (by more than JUDGE_SLACK) is undone and its values ruled out (2026-11-20, studio
-// frame: round 2 turned the piled throw into a heap and the match fell from 85.6 to 84.4 %, measured alike before and
-// after; the fabric's physics is seeded, so such a fall is the change, not noise). Runs by itself once per photo when
-// "read the details" is on.
-const JUDGE_SLACK = 0.005;
+// frame: round 2 turned the piled throw into a heap and the match fell 1.1-1.2 points, twice). The outline moves by
+// about a point between rebuilds of nearly the same piece (test/depth/README.md), so the slack is one point: it is a
+// coarse referee. The finer one is agreement: each round asks twice, with a tight and a wide crop, and only changes
+// both answers name are made (the judge was steady on the pillow count and wavered on the throw: pile, diagonal, heap).
+// Runs by itself once per photo when "read the details" is on.
+const JUDGE_SLACK = 0.01;
 let judgeRun = 0;
 let judgeJob = 1000000; // the extension's job numbers for the judge, apart from the reading's
 let judging = false;
@@ -1267,8 +1725,8 @@ function askVision(body, signal) {
   const url = new URLSearchParams(location.search).get('geminiUrl') || undefined;
   return askGemini(store.get('gemini'), body, { signal, url });
 }
-// the photo and the render, cropped to the piece (its cut-out's box with a margin) at up to 768 px
-function judgePictures() {
+// the photo and the render, cropped to the piece (its cut-out's box with a margin, 12 % or more) at up to 768 px
+function judgePictures(margin = 0.12) {
   const cut = state.cut;
   const big = state.photoBig || state.photoCanvas;
   const k = Math.min(1, 1024 / Math.max(big.width, big.height));
@@ -1282,7 +1740,7 @@ function judgePictures() {
     }
   }
   const sx = W / cut.w; const sy = H / cut.h;
-  const mx = (x1 - x0 + 1) * sx * 0.12; const my = (y1 - y0 + 1) * sy * 0.12;
+  const mx = (x1 - x0 + 1) * sx * margin; const my = (y1 - y0 + 1) * sy * margin;
   const bx = Math.max(0, x0 * sx - mx); const by = Math.max(0, y0 * sy - my);
   const bw = Math.min(W, (x1 + 1) * sx + mx) - bx; const bh = Math.min(H, (y1 + 1) * sy + my) - by;
   const crop = (src, sw, sh) => {
@@ -1360,17 +1818,31 @@ async function judgeModel({ rounds = 2 } = {}) {
       if (!alive()) return;
       status('judge', () => fill(t('judgeWorking'), { r: nf(r) }));
       const type = state.type;
-      const pics = judgePictures();
       const cur = optionsFor(type, state.vals[type] || {});
       const prompt = judgePrompt(type, OPTIONS, cur, (k) => TYPE_T[k][1], (k) => (OPT_T[k] ? OPT_T[k].en : k), optEn, tried);
-      const ans = await askVision(judgeBody(prompt, pics.photo, pics.render, judgeSchema(type, OPTIONS)));
-      if (!alive()) return;
-      const j = parseJudge(ans.text, type, OPTIONS);
-      if (!j) throw new Error(t('seeAIUnreadable'));
+      const schema = judgeSchema(type, OPTIONS);
+      // two looks, one after the other (the extension keeps one judge request at a time): tight crop, then wide
+      const views = [judgePictures(0.12), judgePictures(0.35)];
+      const answers = [];
+      for (const v of views) {
+        const ans = await askVision(judgeBody(prompt, v.photo, v.render, schema));
+        if (!alive()) return;
+        answers.push({ ans, j: parseJudge(ans.text, type, OPTIONS) });
+      }
+      const ok = answers.filter((x) => x.j);
+      if (!ok.length) throw new Error(t('seeAIUnreadable'));
+      const [ja, jb] = [ok[0].j, ok[1] ? ok[1].j : null];
+      // only what both looks name is changed; what one alone names is shown and left as it is
+      const same = (c, d) => c.key === d.key && c.value === d.value;
+      const agreed = jb ? ja.changes.filter((c) => jb.changes.some((d) => same(c, d))) : [];
+      const single = ja.changes.concat(jb ? jb.changes : []).filter((c) => !agreed.some((d) => same(c, d)))
+        .filter((c, i, all) => all.findIndex((d) => same(c, d)) === i);
+      const j = { score: Math.round((ja.score + (jb ? jb.score : ja.score)) / 2), changes: agreed, diff: ja.diff || (jb && jb.diff) || '' };
+      const ans = ok[0].ans;
       const iouBefore = (await measureNow()) || 0;
       if (!alive()) return;
       const done = applyJudge(j, tried);
-      const entry = { round: r, score: j.score, diff: j.diff, done, before: iouBefore };
+      const entry = { round: r, score: j.score, diff: j.diff, done, before: iouBefore, single };
       log.push(entry);
       state.judge.model = ans.model;
       paintJudge();
@@ -1434,6 +1906,12 @@ function paintJudge() {
     const arrow = ar ? '←' : '→'; // from the old value to the new one, in the reading direction
     const parts = l.done.map((c) => `${optLabel(c.key)}: ${/^\d+$/.test(c.from) ? nf(Number(c.from)) : valLabel(c.key, c.from)} ${arrow} ${/^\d+$/.test(c.value) ? nf(Number(c.value)) : valLabel(c.key, c.value)}${ar && c.reason ? ` (${c.reason})` : ''}`);
     li.appendChild(document.createTextNode(` — ${parts.length ? parts.join('؛ ') : t('judgeNoChange')}`));
+    if (l.single && l.single.length) {
+      const d = document.createElement('div');
+      d.className = 'hint';
+      d.textContent = fill(t('judgeSingle'), { c: l.single.map((c) => `${optLabel(c.key)}: ${/^\d+$/.test(c.value) ? nf(Number(c.value)) : valLabel(c.key, c.value)}`).join('؛ ') });
+      li.appendChild(d);
+    }
     if (l.after != null && l.done.length) {
       const d = document.createElement('div');
       d.className = l.undone ? 'hint bad' : 'hint';
@@ -1564,12 +2042,10 @@ function applyRecipe(rc) {
   state.w = rc.width_cm ? String(rc.width_cm) : ''; state.d = rc.depth_cm ? String(rc.depth_cm) : ''; state.h = rc.height_cm ? String(rc.height_cm) : '';
   state.photoSeed = rc.photoSeed == null ? null : rc.photoSeed;
   state.foldShift = rc.foldShift || 0;
-  state.colour = rc.colour === 'photo' && rc.pal ? 'photo' : 'white';
+  state.colour = 'white'; // the site makes white models only
   state.pal = rc.pal || state.pal;
   $('#quality').value = state.quality;
   for (const k of ['w', 'd', 'h']) $(`#${k}`).value = state[k];
-  for (const el of document.querySelectorAll('input[name=colour]')) el.checked = el.value === state.colour;
-  $('#colourPhoto').disabled = !state.pal;
   renderForm();
   scheduleBuild();
   if (rc.physics) setTimeout(settle, 400);
@@ -1577,7 +2053,7 @@ function applyRecipe(rc) {
 
 function insertIntoSketchUp(opts = {}) {
   if (!host && !window.sketchup) return;
-  if (!state.parts || !state.parts.length) return;
+  if (!doc || !doc.parts.some((p) => p.visible)) return;
   const payload = {
     protocol: HOST_PROTOCOL,
     name: state.type === 'ai' ? `AI ${state.aiEngine || 'model'}` : `${TYPE_T[state.type][1]}`,
@@ -1585,8 +2061,12 @@ function insertIntoSketchUp(opts = {}) {
     replace: state.editing,
     place: opts.place !== false, // false: put at the origin (tests); normally the piece follows the mouse
     // a colour measured on the part itself names its material after the part ("AIM Throw"), others after their role
-    parts: state.parts.map((p) => ({ name: p.name, role: p.role, color: colourOfPart(p), pos: b64(p.pos), tris: b64(p.tris),
-      material: state.colour === 'photo' && state.partColors && state.partColors[p.name] ? p.name : p.role })),
+    parts: doc.exportItems().map((it) => {
+      const g = it.geometry.index ? it.geometry : null;
+      const pos = new Float32Array(it.geometry.attributes.position.array);
+      const tris = g ? new Uint32Array(g.index.array) : Uint32Array.from({ length: pos.length / 3 }, (_, i) => i);
+      return { name: it.name, role: it.role, color: null, pos: b64(pos), tris: b64(tris), material: 'AIM white' };
+    }),
   };
   $('#insert').disabled = true;
   status('build', () => t('inserting'));
@@ -1613,11 +2093,14 @@ function start() {
     viewNote = why === 'restored' ? null : (why === 'nowebgl' ? 'nowebgl' : 'lost');
     paintViewNote();
   });
+  doc = new Doc();
+  history = new History();
+  editor = new Editor({ viewer, doc, history, t, nf, onChange: (kind) => { showDims(); paintProvenance(); if (kind === 'edit') { paintEditNote(); prepareDrag(); } } });
   builder = new Engine();
   physics = new Engine();
   applyLang();
   $('#lang').addEventListener('click', () => { lang = lang === 'ar' ? 'en' : 'ar'; store.set('lang', lang); applyLang(); showDims(); });
-  $('#type').addEventListener('change', (e) => { state.type = e.target.value; state.typeByUser = true; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; $('#exactAI').hidden = true; if (state.cut) state.wantFit = true; renderForm(); scheduleBuild(); });
+  $('#type').addEventListener('change', (e) => { if (e.target.value !== 'ai' && aiBusyNow()) cancelAI(); state.type = e.target.value; state.typeByUser = true; state.fitDims = null; state.fitResult = null; $('#compare').hidden = true; $('#exactAI').hidden = true; if (state.cut) state.wantFit = true; renderForm(); scheduleBuild(); });
   for (const k of ['w', 'd', 'h']) {
     $(`#${k}`).addEventListener('input', (e) => {
       // Arabic-Indic and Persian digits and the Arabic decimal mark count as typed; anything else is dropped
@@ -1640,7 +2123,6 @@ function start() {
     });
   }
   $('#quality').addEventListener('change', (e) => { state.quality = e.target.value; scheduleBuild(); });
-  for (const r of document.querySelectorAll('input[name=colour]')) r.addEventListener('change', (e) => { state.colour = e.target.value; scheduleBuild(); });
   $('#settle').addEventListener('click', settle);
   $('#stopSim').addEventListener('click', () => stopSim());
   $('#folds').addEventListener('click', async () => {
@@ -1663,6 +2145,21 @@ function start() {
   bimg.addEventListener('pointerup', (e) => { if (boxDrag) { boxDrag.b = boxPoint(e); drawBox(); } });
   $('#aiMake').addEventListener('click', makeAI);
   $('#aiBest').addEventListener('click', bestOf);
+  $('#dragOut').addEventListener('dragstart', (e) => {
+    if (!dragFile) { e.preventDefault(); return; }
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('DownloadURL', `model/gltf-binary:${dragFile.name}:${dragFile.url}`);
+    e.dataTransfer.setData('text/uri-list', dragFile.url);
+  });
+  $('#dragOut').addEventListener('click', (e) => { e.preventDefault(); exportAs('glb'); });
+  $('#aiLite').addEventListener('click', () => makeLite());
+  $('#aiProfile').addEventListener('click', () => makeProfile(false));
+  $('#anConfirm').addEventListener('change', (e) => { state.productConfirmed = e.target.checked ? photoJob : null; paintProvenance(); });
+  $('#saveProject').addEventListener('click', saveProject);
+  $('#openProject').addEventListener('click', () => $('#projectFile').click());
+  $('#projectFile').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) openProject(f); });
+  $('#aiAuto').checked = aiAutoOn();
+  $('#aiAuto').addEventListener('change', (e) => store.set('aiAuto', e.target.checked ? '1' : '0'));
   $('#judge').addEventListener('click', () => judgeModel());
   for (const slot of document.querySelectorAll('.slot')) {
     const input = slot.querySelector('input');
@@ -1742,7 +2239,7 @@ function start() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
-  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize, setView, makeAI, bestOf, framesFromVideo, judgeModel, judgePictures, measureNow }; // for the tests
+  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize, setView, makeAI, bestOf, framesFromVideo, judgeModel, judgePictures, measureNow, openProject, provenance, projectJSON: () => JSON.stringify(toProject(doc, provenance())), makeProfile, get doc() { return doc; }, get editor() { return editor; }, get history() { return history; } }; // for the tests
 }
 
 start();

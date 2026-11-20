@@ -3,6 +3,7 @@
 // triangles dropped), stood on the floor with its front towards -Y, and sized in cm.
 import * as THREE from 'three';
 import { GLTFLoader } from '../vendor/three/addons/loaders/GLTFLoader.js';
+import { cleanup } from './meshops.js';
 
 const Y_UP_TO_Z_UP = new THREE.Matrix4().makeRotationX(Math.PI / 2); // (x, y, z) -> (x, -z, y)
 
@@ -54,6 +55,20 @@ function weld(pos, tris) {
   const cx = (lo[0] + hi[0]) / 2; const cy = (lo[1] + hi[1]) / 2;
   for (let i = 0; i < out.length; i += 3) { out[i] -= cx; out[i + 1] -= cy; out[i + 2] -= lo[2]; }
   return { pos: new Float32Array(out), tris: new Uint32Array(t), size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]] };
+}
+
+// What image-to-3D models add around the object goes (spikes, a ground sheet from the shadow, floating crumbs), then
+// the part stands on the floor again, centred. A cleanup that would leave less than half the triangles is not used
+// (it would mean the "sheet" was the object).
+export function cleaned(part) {
+  const m = cleanup(part.pos, part.tris);
+  if (m.tris.length < part.tris.length * 0.5) return part;
+  const p = m.pos;
+  const lo = [Infinity, Infinity, Infinity]; const hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], p[i + k]); hi[k] = Math.max(hi[k], p[i + k]); }
+  const cx = (lo[0] + hi[0]) / 2; const cy = (lo[1] + hi[1]) / 2;
+  for (let i = 0; i < p.length; i += 3) { p[i] -= cx; p[i + 1] -= cy; p[i + 2] -= lo[2]; }
+  return { pos: p, tris: m.tris, size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], cleaned: part.tris.length / 3 - m.tris.length / 3 };
 }
 
 // The part resized: one known measurement scales it evenly (a photo has no scale); none: its height becomes `h0`.

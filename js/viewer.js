@@ -89,6 +89,57 @@ export class Viewer {
 
   render() { if (this.ok && !this.lost) this.renderer.render(this.scene, this.camera); }
 
+  // Kit parts -> items { name, role, geometry (cm, z up, model coordinates), color } without showing them (the
+  // document shows its own copies; the items stay for fitting and judging).
+  makeItems(parts) {
+    return parts.map((p) => {
+      const geometry = partGeometry(p);
+      return { name: p.name, role: p.role, geometry, color: [244, 244, 241] };
+    });
+  }
+
+  // Shows the document: one mesh per visible part, all in one white material; the selected parts in a light blue.
+  // Meshes are kept by part id, so an edit moves the mesh instead of making a new one.
+  showDoc(doc, frame, selected = new Set()) {
+    if (!this.ok) return;
+    this.doc = doc;
+    if (!this.white) {
+      this.white = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.955, 0.955, 0.945, THREE.SRGBColorSpace), roughness: 0.82, metalness: 0 });
+      this.picked = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.62, 0.8, 0.98, THREE.SRGBColorSpace), roughness: 0.7, metalness: 0 });
+    }
+    this.byId = this.byId || new Map();
+    const seen = new Set();
+    for (const p of doc.parts) {
+      seen.add(p.id);
+      let mesh = this.byId.get(p.id);
+      if (!mesh) {
+        mesh = new THREE.Mesh(p.geometry, this.white);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData.partId = p.id;
+        this.byId.set(p.id, mesh);
+        this.model.add(mesh);
+      }
+      if (mesh.geometry !== p.geometry) mesh.geometry = p.geometry; // the document disposes geometries, not the viewer
+      mesh.name = p.name;
+      mesh.position.copy(p.position);
+      mesh.quaternion.copy(p.quaternion);
+      mesh.scale.copy(p.scale);
+      mesh.visible = p.visible;
+      mesh.material = selected.has(p.id) ? this.picked : this.white;
+    }
+    for (const [id, mesh] of this.byId) {
+      if (seen.has(id)) continue;
+      this.model.remove(mesh);
+      this.byId.delete(id);
+    }
+    if (frame) this.frame();
+    this.request();
+  }
+
+  meshOf(id) { return this.byId ? this.byId.get(id) : null; }
+  docMeshes() { return this.byId ? [...this.byId.values()].filter((m) => m.visible) : []; }
+
   // parts: kit parts; colourOf(part) -> [r,g,b] or null (white)
   show(parts, colourOf, frame) {
     if (!this.ok) return [];
@@ -117,14 +168,20 @@ export class Viewer {
   }
 
   clear() {
-    for (const m of [...this.model.children]) { this.model.remove(m); m.geometry.dispose(); }
+    for (const m of [...this.model.children]) {
+      this.model.remove(m);
+      if (m.userData.keep) { this.model.add(m); continue; } // the editor's own helpers stay
+      if (m.userData.partId == null) m.geometry.dispose(); // document geometries are the document's to dispose
+    }
+    if (this.byId) this.byId.clear();
     for (const m of this.mats || []) m.dispose();
     this.mats = [];
     this.items = [];
   }
 
-  // bounding box in cm (z up)
+  // bounding box in cm (z up): the document's when it is shown, else the items'
   bounds() {
+    if (this.doc && this.doc.parts.length) return this.doc.bounds();
     const b = new THREE.Box3();
     for (const it of this.items) b.union(it.geometry.boundingBox);
     return b;

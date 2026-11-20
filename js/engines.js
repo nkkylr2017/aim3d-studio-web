@@ -15,6 +15,8 @@ export const SPACES = [
   { id: 'hunyuan2mv', name: 'Hunyuan3D 2mv', space: 'tencent-hunyuan3d-2mv', views: true, interface: { shape_generation: 13, on_export_click: 6 } },
 ];
 export const FACES = { light: 20000, fast: 30000, standard: 60000, high: 120000 };
+// one engine's whole attempt (queue, GPU, export, download): past it the next engine, or the local draft, takes over
+export const ATTEMPT_LIMIT = 6 * 60 * 1000;
 const MAX_GLB = 200 * 1024 * 1024;
 
 const unwrap = (d) => (d && typeof d === 'object' && d.value && typeof d.value === 'object' ? d.value : d);
@@ -86,7 +88,7 @@ export function engineQueue({ engine = '', only = false, views = null } = {}) {
   return queue;
 }
 export async function makeModel({ image, views = null, token = '', quality = 'light', faces, engine = '', only = false, steps = 20,
-  octree = 256, onStatus = () => {}, signal, fetchFn } = {}) {
+  octree = 256, onStatus = () => {}, signal, fetchFn, limit = ATTEMPT_LIMIT } = {}) {
   const queue = engineQueue({ engine, only, views });
   const v = views || {};
   const o = {
@@ -101,9 +103,14 @@ export async function makeModel({ image, views = null, token = '', quality = 'li
   const tried = [];
   for (const s of queue) {
     const say = (step) => onStatus(step, s.name);
+    // this attempt's own stop: the caller's, or its time limit
+    const stop = new AbortController();
+    const onAbort = () => stop.abort();
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => stop.abort(), limit);
     try {
       say('connect');
-      const c = await new Gradio(s.space, { token, signal, fetchFn }).connect();
+      const c = await new Gradio(s.space, { token, signal: stop.signal, fetchFn }).connect();
       const changed = c.interfaceProblems(s.interface);
       if (changed.length) throw new GradioError(`changed its interface (${changed.join('; ')})`, 'changed');
       say('upload');
@@ -115,8 +122,12 @@ export async function makeModel({ image, views = null, token = '', quality = 'li
       return { glb, engine: s.name, id: s.id, tried };
     } catch (e) {
       if (signal && signal.aborted) throw e;
-      tried.push({ engine: s.name, error: String(e.message).slice(0, 200), kind: e.kind || 'space' });
+      const timedOut = stop.signal.aborted;
+      tried.push({ engine: s.name, error: timedOut ? `no model in ${Math.round(limit / 60000)} min` : String(e.message).slice(0, 200), kind: timedOut ? 'busy' : e.kind || 'space' });
       if (e.kind === 'token') break; // a wrong token is wrong everywhere
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
     }
   }
   const err = new Error(tried.map((t) => `${t.engine}: ${t.error}`).join(' | '));

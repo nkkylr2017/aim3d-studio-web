@@ -420,6 +420,50 @@ export class Fitter {
     return { ...best, iou: sc.iou, evals, cropped, pose: sc.pose };
   }
 
+  // How well the outlines line up, not just the areas: the share of each outline's edge cells within 1.5 cells of the
+  // other's, as an F-score (0..1). Corners and straight sides show here where they barely move the IoU (a square top
+  // and a round one cover almost the same area). Cells on the region's border (a photo edge) are left out.
+  edgeScore(cut, p) {
+    const grid = toGrid(cut);
+    if (!grid.box) return 0;
+    const { q } = this.aligned(p, grid, 2);
+    const sil = this.silhouette(q, grid, 2).s;
+    const W = grid.gw; const H = grid.gh;
+    const edges = (m) => {
+      const e = new Uint8Array(W * H);
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+        const i = y * W + x;
+        if (!m[i] || grid.u[i]) continue;
+        if (!m[i - 1] || !m[i + 1] || !m[i - W] || !m[i + W]) e[i] = 1;
+      }
+      return e;
+    };
+    const dist = (e) => { // chamfer distance (1, 1.4) to the nearest edge cell
+      const d = new Float32Array(W * H).fill(1e9);
+      for (let i = 0; i < d.length; i++) if (e[i]) d[i] = 0;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (x > 0) d[i] = Math.min(d[i], d[i - 1] + 1);
+        if (y > 0) { d[i] = Math.min(d[i], d[i - W] + 1); if (x > 0) d[i] = Math.min(d[i], d[i - W - 1] + 1.4); if (x < W - 1) d[i] = Math.min(d[i], d[i - W + 1] + 1.4); }
+      }
+      for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+        const i = y * W + x;
+        if (x < W - 1) d[i] = Math.min(d[i], d[i + 1] + 1);
+        if (y < H - 1) { d[i] = Math.min(d[i], d[i + W] + 1); if (x < W - 1) d[i] = Math.min(d[i], d[i + W + 1] + 1.4); if (x > 0) d[i] = Math.min(d[i], d[i + W - 1] + 1.4); }
+      }
+      return d;
+    };
+    const em = edges(grid.g); const es = edges(sil);
+    const dm = dist(em); const ds = dist(es);
+    let nm = 0; let hm = 0; let ns = 0; let hs = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (em[i]) { nm++; if (ds[i] <= 1.5) hm++; }
+      if (es[i]) { ns++; if (dm[i] <= 1.5) hs++; }
+    }
+    const r = nm ? hm / nm : 0; const pr = ns ? hs / ns : 0;
+    return r + pr ? (2 * r * pr) / (r + pr) : 0;
+  }
+
   // How much the match changes when depth or height move by ±20% at the fitted camera (re-placed each time): near
   // zero means this view cannot tell that size (the user should check it). -> { sy: change, sz: change }
   sensitivity(cut, p) {

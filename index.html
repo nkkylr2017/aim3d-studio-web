@@ -122,6 +122,44 @@
   .judge-list[hidden] { display: none; }
   .judge-list li { margin: 4px 0; line-height: 1.5; }
   .judge-list .hint { margin-top: 2px; }
+  .tools { position: absolute; top: 18px; right: 22px; display: flex; gap: 4px; padding: 4px; border-radius: 10px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 1px 4px rgb(0 0 0 / .12); z-index: 3; }
+  html[dir=rtl] .tools { right: auto; left: 22px; }
+  .tools[hidden] { display: none; }
+  .tool { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+  .tool:hover { background: var(--field); }
+  .tool.on { background: var(--ink); color: var(--panel); }
+  .tool:disabled { opacity: .35; cursor: default; }
+  .tools .sep { width: 1px; background: var(--rule); margin: 4px 2px; }
+  .parts { list-style: none; margin: 6px 0; padding: 0; max-height: 190px; overflow-y: auto; border: 1px solid var(--rule); border-radius: 8px; }
+  .parts li { display: flex; align-items: center; border-bottom: 1px solid var(--rule); }
+  .parts li:last-child { border-bottom: 0; }
+  .parts li.on { background: color-mix(in srgb, #9ccbf7 40%, transparent); }
+  .parts li.off .pname { opacity: .45; }
+  .parts .pname { flex: 1; text-align: start; border: 0; background: transparent; font: inherit; font-size: 13px; padding: 6px 10px; cursor: pointer; color: var(--ink); }
+  .parts .eye { border: 0; background: transparent; font-size: 13px; padding: 6px 10px; cursor: pointer; color: var(--muted); }
+  #partFields .name { display: block; margin: 8px 0 4px; font-size: 12.5px; color: var(--muted); }
+  .cut-box { margin-top: 8px; padding: 8px; border: 1px solid var(--rule); border-radius: 8px; }
+  .cut-box[hidden] { display: none; }
+  .cut-box .row { align-items: center; gap: 4px; }
+  .cut-box input[type=range] { width: 100%; margin: 8px 0; }
+  .lasso { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 4; cursor: crosshair; touch-action: none; }
+  .lasso[hidden] { display: none; }
+  .profile-box[hidden] { display: none; }
+  .profile-svg { width: 100%; max-width: 260px; aspect-ratio: 1; display: block; margin: 6px auto; background: var(--field); border: 1px solid var(--rule); border-radius: 8px; touch-action: none; }
+  .profile-svg .axis { stroke: var(--rule); stroke-dasharray: 4 4; }
+  .profile-svg .seen { fill: none; stroke: #ff6a3d; stroke-opacity: .35; stroke-dasharray: 3 3; }
+  .profile-svg .pt.locked { fill: var(--ink); }
+  .pname .kind { opacity: .6; font-size: .8em; }
+  .provenance { position: absolute; inset-inline: 18px; bottom: 64px; margin: 0; padding: 4px 10px; width: fit-content; max-width: calc(100% - 36px); background: color-mix(in srgb, var(--field) 88%, transparent); border-radius: 8px; pointer-events: none; font-size: 12px; }
+  .provenance[hidden] { display: none; }
+  .profile-svg .body { fill: color-mix(in srgb, var(--ink) 8%, transparent); stroke: var(--ink); stroke-width: 1.5; }
+  .profile-svg .pt { fill: #ff6a3d; stroke: #fff; stroke-width: 2; cursor: grab; }
+  .btn.drag { cursor: grab; text-decoration: none; border-style: dashed; }
+  .btn.drag[hidden] { display: none; }
+  .btn.drag:active { cursor: grabbing; }
+  .btn.drag.waiting { opacity: .5; pointer-events: none; }
+  .lasso polyline { fill: rgb(255 106 61 / .12); stroke: #ff6a3d; stroke-width: 2; stroke-dasharray: 6 4; }
+  @media (max-width: 760px) { .tools { top: auto; bottom: 64px; } }
   .choice-set legend { font-size: 13.5px; font-weight: 600; color: var(--muted); padding: 0; margin: 0 0 10px; }
   .link { background: none; border: 0; color: var(--accent); font: inherit; font-size: 13px; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 
@@ -209,6 +247,9 @@
       <div class="analysis" id="analysis" hidden>
         <h3 data-t="anTitle"></h3>
         <p class="an-name" id="anName"></p>
+        <p class="note" id="anProduct" hidden></p>
+        <a class="link" id="anSearch" target="_blank" rel="noopener noreferrer" data-t="anSearch" hidden></a>
+        <label class="check" id="anConfirmRow" hidden><input type="checkbox" id="anConfirm"> <span data-t="anConfirm"></span></label>
         <p class="hint" id="anDesc"></p>
         <ul class="an-parts" id="anParts"></ul>
         <p class="note" id="anSize"></p>
@@ -248,14 +289,61 @@
         </div>
         <p class="hint" data-t="viewsHint"></p>
       </div>
-      <div class="row wrap"><button class="btn primary" id="aiMake" type="button" data-t="aiMake"></button><button class="btn" id="aiBest" type="button" data-t="aiBest"></button><button class="btn" id="aiCancel" type="button" data-t="aiCancel" hidden></button></div>
+      <div class="row wrap"><button class="btn primary" id="aiMake" type="button" data-t="aiMake"></button><button class="btn" id="aiBest" type="button" data-t="aiBest"></button><button class="btn" id="aiLite" type="button" data-t="aiLite"></button><button class="btn" id="aiProfile" type="button" data-t="aiProfile"></button><button class="btn" id="aiCancel" type="button" data-t="aiCancel" hidden></button></div>
       <p class="hint" data-t="aiBestHint"></p>
+      <label class="check"><input type="checkbox" id="aiAuto"> <span data-t="aiAuto"></span></label>
       <p class="note" id="aiState" aria-live="polite"></p>
       <div class="cands" id="aiResults" hidden></div>
       <div class="field" id="tokenRow" hidden>
         <label class="name" for="token" data-t="token"></label>
         <div class="row"><input type="password" id="token" autocomplete="off" dir="ltr"><button class="btn" id="tokenSave" type="button" data-t="tokenSave"></button></div>
       </div>
+    </section>
+
+    <section id="editBox" hidden>
+      <h2 data-t="editTitle"></h2>
+      <p class="hint" data-t="editHint"></p>
+      <ul class="parts" id="partsList"></ul>
+      <p class="note" id="editState"></p>
+      <div class="pair-box" id="pairBox" hidden>
+        <span class="name" data-t="pairTitle"></span>
+        <div class="row wrap"><button class="btn" id="pairFind" type="button"></button><span class="hint" id="pairCount"></span></div>
+        <label class="check"><input type="checkbox" id="pairLink" checked> <span data-t="pairLink"></span></label>
+        <label class="field"><span class="name" data-t="snapDist"></span><input type="text" inputmode="decimal" id="snapDist" value="2" dir="ltr"></label>
+        <p class="hint" data-t="snapHint"></p>
+      </div>
+      <div id="partFields" hidden>
+        <span class="name" data-t="pPos"></span>
+        <div class="sizes"><label><span>X</span><input type="text" inputmode="decimal" id="pX" dir="ltr"></label><label><span>Y</span><input type="text" inputmode="decimal" id="pY" dir="ltr"></label><label><span>Z</span><input type="text" inputmode="decimal" id="pZ" dir="ltr"></label></div>
+        <span class="name" data-t="pSize"></span>
+        <div class="sizes"><label><span data-t="w"></span><input type="text" inputmode="decimal" id="pW" dir="ltr"></label><label><span data-t="d"></span><input type="text" inputmode="decimal" id="pD" dir="ltr"></label><label><span data-t="h"></span><input type="text" inputmode="decimal" id="pH" dir="ltr"></label></div>
+        <label class="check"><input type="checkbox" id="pRatio"> <span data-t="pRatio"></span></label>
+        <label class="field"><span class="name" data-t="pTurn"></span><input type="text" inputmode="decimal" id="pR" dir="ltr"></label>
+        <div class="row wrap"><button class="btn" id="pDup" type="button" data-t="pDup"></button><button class="btn" id="pMirror" type="button" data-t="pMirror"></button><button class="btn" id="pHide" type="button" data-t="pHide"></button><button class="btn" id="pDel" type="button" data-t="pDel"></button></div>
+        <div class="pair-box" id="pairOwn"><p class="note" id="pairOf" hidden></p><button class="link" id="pairUnlink" type="button" data-t="pairUnlink" hidden></button></div>
+        <span class="name" data-t="shapeTools"></span>
+        <div class="row wrap"><button class="btn" id="sCut" type="button" data-t="sCut"></button><button class="btn" id="sLasso" type="button" data-t="sLasso"></button><button class="btn" id="sSplit" type="button" data-t="sSplit"></button></div>
+        <div class="row wrap"><button class="btn" id="sClean" type="button" data-t="sClean"></button><button class="btn" id="sSmooth" type="button" data-t="sSmooth"></button><button class="btn" id="sLighter" type="button" data-t="sLighter"></button></div>
+        <label class="check"><input type="checkbox" id="lassoThrough"> <span data-t="lassoThrough"></span></label>
+        <div class="profile-box" id="profileBox" hidden>
+          <span class="name" data-t="prTitle"></span>
+          <svg id="profileSvg" class="profile-svg"></svg>
+          <p class="hint" data-t="prHint"></p>
+          <div class="sizes"><label><span data-t="prH"></span><input type="text" inputmode="decimal" id="prH" dir="ltr"></label><label><span data-t="prD"></span><input type="text" inputmode="decimal" id="prD" dir="ltr"></label><label><span data-t="prTop"></span><input type="text" inputmode="decimal" id="prTop" dir="ltr"></label></div>
+          <div class="sizes"><label><span data-t="prBase"></span><input type="text" inputmode="decimal" id="prBase" dir="ltr"></label><label><span data-t="prWall"></span><input type="text" inputmode="decimal" id="prWall" dir="ltr"></label><label><span data-t="prSeg"></span><input type="text" inputmode="numeric" id="prSeg" dir="ltr"></label></div>
+          <label class="check"><input type="checkbox" id="prHollow"> <span data-t="prHollow"></span></label>
+          <button class="link" id="prReset" type="button" data-t="prReset"></button>
+          <p class="hint" id="prSideNote"></p>
+          <button class="btn" id="prSwap" type="button" hidden></button>
+        </div>
+        <div class="cut-box" id="cutBox" hidden>
+          <div class="row"><span data-t="cutAcross"></span><button class="tool" type="button" data-axis="z" data-t="axisZ"></button><button class="tool" type="button" data-axis="x" data-t="axisX"></button><button class="tool" type="button" data-axis="y" data-t="axisY"></button></div>
+          <input type="range" id="cutAt" min="1" max="99" value="50">
+          <div class="row"><button class="btn primary" id="cutGo" type="button" data-t="cutGo"></button><button class="btn" id="cutCancel" type="button" data-t="cutCancel"></button></div>
+        </div>
+      </div>
+      <div class="row wrap"><button class="link" id="mTurn" type="button" data-t="mTurn"></button><button class="link" id="mSide" type="button" data-t="mSide"></button><button class="link" id="mFloor" type="button" data-t="mFloor"></button><button class="link" id="mShowAll" type="button" data-t="mShowAll"></button></div>
+      <p class="note" id="editNote" data-t="editNote" hidden></p>
     </section>
 
     <section>
@@ -278,13 +366,6 @@
       <label class="field"><span class="name" data-t="quality"></span>
         <select id="quality"><option value="light" data-t="light" selected></option><option value="standard" data-t="standard"></option><option value="high" data-t="high"></option></select>
       </label>
-      <fieldset class="choice-set">
-        <legend data-t="colour"></legend>
-        <div class="choice">
-          <label><input type="radio" name="colour" value="white" checked><span data-t="white"></span></label>
-          <label><input type="radio" name="colour" value="photo" id="colourPhoto" disabled><span data-t="photoColours"></span></label>
-        </div>
-      </fieldset>
       <p class="note" id="buildState" aria-live="polite"></p>
     </section>
   </aside>
@@ -295,6 +376,15 @@
       <div><strong id="dimW"></strong><span data-t="w"></span></div><i>×</i>
       <div><strong id="dimD"></strong><span data-t="d"></span></div><i>×</i>
       <div><strong id="dimH"></strong><span data-t="h"></span></div><em>cm</em>
+    </div>
+    <svg class="lasso" id="lasso" hidden><polyline points="" /></svg>
+    <div class="tools" id="tools" hidden>
+      <button class="tool" type="button" data-mode="translate" data-t="tMove"></button>
+      <button class="tool" type="button" data-mode="rotate" data-t="tTurn"></button>
+      <button class="tool" type="button" data-mode="scale" data-t="tScale"></button>
+      <span class="sep"></span>
+      <button class="tool" id="tUndo" type="button" data-t="tUndo"></button>
+      <button class="tool" id="tRedo" type="button" data-t="tRedo"></button>
     </div>
     <p class="import" id="importHint" data-t="importHint"></p>
     <div class="compare-view box-view" id="boxView" hidden>
@@ -318,9 +408,13 @@
       <button class="btn" id="compare" type="button" data-t="compare" hidden></button>
       <button class="btn" id="editSel" type="button" data-t="editSel" hidden></button>
       <button class="btn primary" id="insert" type="button" data-t="insert" hidden></button>
+      <a class="btn drag" id="dragOut" href="#" draggable="true" data-t="dragOut" hidden></a>
       <button class="btn primary" id="glb" type="button" data-t="glb"></button>
       <button class="btn" id="dae" type="button" data-t="dae"></button>
+      <button class="btn" id="saveProject" type="button" data-t="saveProject"></button>
+      <button class="link" id="openProject" type="button" data-t="openProject"></button><input type="file" id="projectFile" accept=".aim3d,application/json" hidden>
     </div>
+    <p class="hint provenance" id="provenance" hidden></p>
   </main>
 </div>
 <div class="file-warn" id="fileWarn" role="alert" hidden></div>

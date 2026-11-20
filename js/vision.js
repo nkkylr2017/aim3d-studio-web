@@ -28,9 +28,17 @@ const HINTS = [
 export function analysisPrompt(types, options, typeName, optName, en) {
   const lines = [
     'This photo will be rebuilt as a 3D model inside SketchUp. Look at it like a furniture designer preparing the model.',
+    'First identify the product as precisely as you can from what you know: maker, collection or model name, and how sure you are '
+      + '(do not invent a name: leave it empty when you do not recognise it), and write a short English web search query that would '
+      + 'find more photos of this exact product from other angles. Knowing the product helps you judge its real size and hidden sides.',
     `First, what the main object is: "type" is one of ${types.map((k) => `${k} (${typeName(k)})`).join(', ')}, or other (anything else).`,
     'Then its visible parts from the outside in ("layers"), each with how many there are and a short Arabic note on position, '
       + 'material, colour and shape (for a bed: base, headboard, mattress, duvet, every pillow and cushion, throw blanket, legs).',
+    '"round_body": yes when the main body is round in plan (a body of revolution: turning it about its vertical axis leaves it '
+      + 'unchanged, like a vase, bowl, round pot, bottle, round lamp shade, round stool), no when it is square, rectangular, oval, '
+      + 'faceted or irregular, unsure when you cannot tell. "top_opening": open (a wide open top: bowl, pot, vase with a wide '
+      + 'mouth), narrow (a small mouth: bottle, narrow vase), closed (a solid or covered top: stool seat, table top, lidded jar), '
+      + 'or unknown.',
     'Then "attrs": for the type you chose, each of its keys below with exactly one of its values (value = what it looks like); '
       + 'every other key is "unknown".',
   ];
@@ -61,9 +69,15 @@ export function analysisSchema(types, options) {
   for (const [k, set] of Object.entries(keys)) attrProps[k] = { type: 'string', enum: [...set, 'unknown'] };
   return {
     type: 'object',
-    required: ['type', 'object_en', 'object_ar', 'description_ar', 'layers', 'attrs', 'width_cm', 'depth_cm', 'height_cm',
-      'size_confidence', 'photo_quality', 'issues_ar', 'tip_ar'],
+    required: ['product', 'maker', 'product_confidence', 'search_query', 'round_body', 'top_opening', 'type', 'object_en', 'object_ar', 'description_ar', 'layers',
+      'attrs', 'width_cm', 'depth_cm', 'height_cm', 'size_confidence', 'photo_quality', 'issues_ar', 'tip_ar'],
     properties: {
+      product: { type: 'string', description: 'Collection or model name if you recognise the exact product, else empty' },
+      maker: { type: 'string', description: 'Maker or brand if you recognise it, else empty' },
+      product_confidence: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
+      search_query: { type: 'string', description: 'English web search query for more photos of this exact product' },
+      round_body: { type: 'string', enum: ['yes', 'no', 'unsure'] },
+      top_opening: { type: 'string', enum: ['open', 'narrow', 'closed', 'unknown'] },
       type: { type: 'string', enum: [...types, 'other'] },
       object_en: { type: 'string', description: 'Short English name, e.g. "upholstered bed with a winged headboard"' },
       object_ar: { type: 'string', description: 'Short Arabic name' },
@@ -281,5 +295,10 @@ export function parseAnalysis(text, types, options) {
     quality: ['good', 'ok', 'poor'].includes(j.photo_quality) ? j.photo_quality : 'ok',
     issues: (Array.isArray(j.issues_ar) ? j.issues_ar : []).slice(0, 6).map((x) => str(x, 160)).filter(Boolean),
     tip: str(j.tip_ar, 240),
+    product: str(j.product, 80), maker: str(j.maker, 60),
+    productSure: ['none', 'low', 'medium', 'high'].includes(j.product_confidence) ? j.product_confidence : 'none',
+    query: str(j.search_query, 120) || str(j.object_en, 80),
+    roundBody: ['yes', 'no', 'unsure'].includes(j.round_body) ? j.round_body : 'unsure',
+    opening: ['open', 'narrow', 'closed', 'unknown'].includes(j.top_opening) ? j.top_opening : 'unknown',
   };
 }

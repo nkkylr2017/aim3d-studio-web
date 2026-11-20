@@ -3,17 +3,17 @@
 // transformers.js in its own Cache Storage entry.
 // Some browsers (SketchUp's built-in one) have a Cache Storage that never answers: every cache step here gives up
 // after 1.5 s and the request goes to the network, so the page can never hang on this worker.
-const APP = 'aim3d-app-v6';
-const VENDOR = 'aim3d-vendor-v3';
+const APP = 'aim3d-app-v11';
+const VENDOR = 'aim3d-vendor-v4';
 const SHELL = ['./', './index.html', './js/app.js', './js/furniture.js', './js/kit.js', './js/rng.js', './js/cloth_sim.js', './js/mesh.js',
   './js/viewer.js', './js/export.js', './js/engine.worker.js', './js/recognize.worker.js', './js/clip_prompts.json',
-  './js/fit.js', './js/ai.js', './js/mask.worker.js', './js/vision.js', './js/gradio.js', './js/engines.js'];
+  './js/fit.js', './js/ai.js', './js/mask.worker.js', './js/vision.js', './js/gradio.js', './js/engines.js', './js/scene.js', './js/editor.js', './js/meshops.js', './js/lite.js', './js/profile.js', './js/project.js', './js/assembly.js', './js/lite.worker.js'];
 
 // the libraries are fetched by the first visit before this worker exists, so they are cached here explicitly
 const LIBS = ['./vendor/three/three.module.js', './vendor/three/three.core.js', './vendor/three/addons/OrbitControls.js',
   './vendor/three/addons/GLTFExporter.js', './vendor/three/addons/BufferGeometryUtils.js', './vendor/transformers.min.js',
   './vendor/three/addons/loaders/GLTFLoader.js', './vendor/three/addons/utils/BufferGeometryUtils.js', './vendor/three/addons/utils/SkeletonUtils.js',
-  './vendor/ort-wasm-simd-threaded.jsep.mjs', './vendor/ort-wasm-simd-threaded.jsep.wasm'];
+  './vendor/ort-wasm-simd-threaded.jsep.mjs', './vendor/ort-wasm-simd-threaded.jsep.wasm', './vendor/three/addons/controls/TransformControls.js'];
 
 const late = (ms) => new Promise((ok) => setTimeout(() => ok(null), ms));
 // a cache, or null when the cache does not answer in time
