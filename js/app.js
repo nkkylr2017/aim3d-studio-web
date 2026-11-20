@@ -121,7 +121,7 @@ const UI = {
   provGeometry: ['الشكل: {v}', 'Shape: {v}'], provSize: ['المقاس: {v}', 'Size: {v}'], provProduct: ['القطعة: {v}', 'Product: {v}'],
   provCamera: ['يفترض صورة من الجنب', 'assumes a side view'],
   provAbove: ['تقدير لصورة من فوق ≈{d}° (الارتفاع تقريبي)', 'elevated-view estimate ≈{d}° (height approximate)'],
-  why_from_above: ['الصورة مأخوذة من فوق فصححت الارتفاع من شكل الحافة', 'seen from above: heights corrected from the rim'],
+  why_from_above: ['الصورة مأخوذة من فوق (الحافة ظاهرة كبيضاوي): جرّب «تقدير صورة مأخوذة من فوق» في لوحة المحيط', 'taken from above (the rim shows as an ellipse): try the elevated-view estimate in the Profile panel'],
   size_user: ['كتبته أنت', 'typed by you'], size_ai: ['تقدير الذكاء الاصطناعي (غير مؤكد)', 'AI estimate (unverified)'],
   size_default: ['مقاس افتراضي (غير مؤكد)', 'a typical size (unverified)'],
   product_ai_suggestion: ['اقتراح الذكاء الاصطناعي من الصورة، بدون بحث، غير مؤكد', 'AI suggestion from the picture, not searched, unverified'],
@@ -666,6 +666,12 @@ function applyAISeen(seen) {
     if (TYPES.includes(seen.type)) state.type = seen.type;
     else if (seen.type === 'other') { state.type = 'ai'; setTimeout(maybeAutoAI, 0); }
   }
+  // a reading slower than the automatic route's wait: the rough draft it left gives way to the round body, as long as
+  // the user has not touched it (the same checks as ever decide)
+  // (tied to the photo the reading belongs to; everything is checked again at the moment of replacing)
+  const lateOk = () => seen.photo === photoJob && state.aiSeen === seen && seen.roundBody === 'yes' && state.type === 'ai'
+    && !state.typeByUser && doc && doc.parts.length && doc.parts.every((p) => p.kind === 'lite') && !doc.edited;
+  if (lateOk()) setTimeout(() => { if (lateOk()) makeProfile(true); }, 0);
   if (!TYPES.includes(seen.type)) return;
   const vals = state.vals[seen.type] = state.vals[seen.type] || {};
   const mine = state.userSet[seen.type] || {};
@@ -2281,7 +2287,7 @@ function start() {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   scheduleBuild();
   connectSketchUp();
-  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize, setView, makeAI, bestOf, framesFromVideo, judgeModel, judgePictures, measureNow, openProject, provenance, projectJSON: () => JSON.stringify(toProject(doc, provenance())), makeProfile, get doc() { return doc; }, get editor() { return editor; }, get history() { return history; } }; // for the tests
+  window.aim3d = { state, viewer, rebuild, settle, exportAs, toGLB, toDAE, insertIntoSketchUp, recipe, applyRecipe, runFit, openCompare, cutBox, readTriple, aiPhoto, seePrompt, readDetails, paintAnalysis, useAISize, setView, makeAI, bestOf, framesFromVideo, judgeModel, judgePictures, measureNow, openProject, provenance, profileFromMask, projectJSON: () => JSON.stringify(toProject(doc, provenance())), makeProfile, get doc() { return doc; }, get editor() { return editor; }, get history() { return history; } }; // for the tests
 }
 
 start();

@@ -3,7 +3,7 @@
 // transformers.js in its own Cache Storage entry.
 // Some browsers (SketchUp's built-in one) have a Cache Storage that never answers: every cache step here gives up
 // after 1.5 s and the request goes to the network, so the page can never hang on this worker.
-const APP = 'aim3d-app-v12';
+const APP = 'aim3d-app-v13';
 const VENDOR = 'aim3d-vendor-v4';
 const SHELL = ['./', './index.html', './js/app.js', './js/furniture.js', './js/kit.js', './js/rng.js', './js/cloth_sim.js', './js/mesh.js',
   './js/viewer.js', './js/export.js', './js/engine.worker.js', './js/recognize.worker.js', './js/clip_prompts.json',

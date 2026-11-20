@@ -283,19 +283,52 @@ export function radiusAt(points, z) {
   return z < points[0].z ? points[0].r : points[points.length - 1].r;
 }
 
-// The thresholds, provisional (tuned on the test photos, not settled).
-export const LIMITS = { score: 0.93, axis: 0.8, rollDeg: 3, gaps: 0.2, oneSide: 0.35 };
+// The thresholds, provisional (tuned on the test photos, not settled). straighten: a photo turned by more than 1.5 and
+// up to this many degrees is turned back first (the line through the row middles says by how much), then measured
+// again; only a slant left after that is a doubt.
+export const LIMITS = { score: 0.93, axis: 0.8, rollDeg: 3, gaps: 0.2, oneSide: 0.35, straighten: 10 };
+
+// the mask turned by deg about the centre of the object's box (nearest pixel; outside the photo stays background)
+export function rotateMask(mask, w, h, deg, cx, cy) {
+  const out = new Uint8Array(w * h);
+  const a = (deg * Math.PI) / 180; const c = Math.cos(a); const s = Math.sin(a);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dx = x + 0.5 - cx; const dy = y + 0.5 - cy;
+      const sx = Math.floor(cx + c * dx - s * dy); const sy = Math.floor(cy + s * dx + c * dy);
+      if (sx >= 0 && sx < w && sy >= 0 && sy < h) out[y * w + x] = mask[sy * w + sx];
+    }
+  }
+  return out;
+}
 
 // the whole route on a mask. strict (the automatic route): any doubt refuses; else (the user asked) only a mask that
 // is not symmetric at all is refused and the doubts come back as warnings. open: what is known of the top ('open' a
 // wide open top: a rim seen from above is looked for; 'unknown': looked for with the stricter test; anything else:
 // not looked for). -> { points, outline, score, diag, camera, reasons[], warnings[], size } (points null when refused)
 // or null (empty mask)
-export function profileFromMask(mask, w, h, { heightCm = 100, strict = true, minScore = strict ? LIMITS.score : 0.8, open = 'unknown' } = {}) {
-  const ax = findAxis(mask, w, h);
+export function profileFromMask(mask0, w, h, { heightCm = 100, strict = true, minScore = strict ? LIMITS.score : 0.8, open = 'unknown' } = {}) {
+  let mask = mask0;
+  let ax = findAxis(mask, w, h);
   if (!ax) return null;
-  const prof = readProfile(mask, w, h, ax);
-  const diag = diagnose(mask, w, h, ax, prof);
+  let prof = readProfile(mask, w, h, ax);
+  let diag = diagnose(mask, w, h, ax, prof);
+  // a slightly turned photo is straightened: when it leans or is not quite symmetric, the turn (up to LIMITS.straighten
+  // degrees) that makes the outline most symmetric is searched (2 degree steps, then half degrees), the mask is turned
+  // back and measured again; kept only if clearly more symmetric (and said: diag.straightened)
+  let straightened = 0;
+  if (Math.abs(diag.rollDeg) > 1.5 || ax.score < LIMITS.score) {
+    const cx = (ax.x0 + ax.x1 + 1) / 2; const cy = (ax.y0 + ax.y1 + 1) / 2;
+    const tryAt = (deg) => { const m = rotateMask(mask0, w, h, deg, cx, cy); const a2 = findAxis(m, w, h); return { deg, m, a2, score: a2 ? a2.score : 0 }; };
+    let best = { deg: 0, score: ax.score };
+    for (let d = -LIMITS.straighten; d <= LIMITS.straighten; d += 2) { if (d === 0) continue; const t = tryAt(d); if (t.score > best.score) best = t; }
+    if (best.deg) for (const d of [best.deg - 1, best.deg - 0.5, best.deg + 0.5, best.deg + 1]) { const t = tryAt(d); if (t.score > best.score) best = t; }
+    if (best.deg && best.score >= ax.score + 0.02) {
+      straightened = -best.deg;
+      mask = best.m; ax = best.a2; prof = readProfile(mask, w, h, ax);
+      diag = { ...diagnose(mask, w, h, ax, prof), cropped: diag.cropped, straightened };
+    }
+  }
   const doubts = [];
   if (ax.score < LIMITS.score) doubts.push('symmetry');
   if (diag.axisConfidence < LIMITS.axis) doubts.push('axis');
@@ -304,6 +337,11 @@ export function profileFromMask(mask, w, h, { heightCm = 100, strict = true, min
   if (diag.gaps > LIMITS.gaps) doubts.push('gaps');
   if (diag.oneSide > LIMITS.oneSide) doubts.push('one_side');
   if (diag.lowRes) doubts.push('low_res');
+  // an open top whose rim shows as an ellipse: the photo looks down into it, so the side view would close it into a
+  // dome (seen on a real bowl) and the elevated estimate is not trusted by itself either: a doubt, the automatic route
+  // steps back, by hand both readings stay one click apart
+  const top = open === 'open' ? topEllipse(prof) : open === 'unknown' ? topEllipse(prof, { strict: true }) : null;
+  if (top && open === 'open') doubts.push('from_above');
   const refuse = ax.score < minScore || (strict && doubts.length > 0);
   const base = { score: ax.score, diag, reasons: refuse ? (doubts.length ? doubts : ['symmetry']) : [], warnings: refuse ? [] : doubts };
   if (refuse) return { ...base, points: null };
@@ -322,7 +360,6 @@ export function profileFromMask(mask, w, h, { heightCm = 100, strict = true, min
     const camera = top ? { view: 'above', elevDeg: Math.round(top.elevDeg), evidence: 'rim ellipse' } : { view: 'side' };
     return { points, outline, camera };
   };
-  const top = open === 'open' ? topEllipse(prof) : open === 'unknown' ? topEllipse(prof, { strict: true }) : null;
   const main = build(null);
   const alt = top ? build(top) : null;
   const maxR = Math.max(...main.points.map((p) => p.r));
